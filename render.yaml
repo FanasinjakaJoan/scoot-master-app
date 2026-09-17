@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: scoot-master-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SEED_ON_START
+        value: "false"
+    disk:
+      name: scoot-master-data
+      mountPath: /app/data
+      sizeGB: 1
+
+  - type: web
+    name: scoot-master-web
+    runtime: docker
+    dockerfilePath: ./mobile/Dockerfile
+    dockerContext: .
+    envVars:
+      # Communication privée Render entre le frontend et l'API.
+      - key: API_TARGET
+        value: http://scoot-master-api:4000
