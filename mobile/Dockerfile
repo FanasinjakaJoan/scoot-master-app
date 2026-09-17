@@ -4,20 +4,19 @@
 
 # ---------- Étape 1 : build du bundle web ----------
 FROM node:22-alpine AS build
-WORKDIR /app
+WORKDIR /app/mobile
 
-COPY mobile/package*.json ./mobile/
-RUN npm ci --prefix mobile --no-audit --no-fund
+COPY mobile/package*.json ./
+RUN npm ci --no-audit --no-fund
 
-COPY mobile ./mobile
+COPY mobile ./
 # URL d'API vide ⇒ chemins relatifs : l'app appelle /api/* sur la même origine,
 # le serveur web (étape 2) relaie vers le backend. Aucun CORS à configurer.
 ARG EXPO_PUBLIC_API_URL=""
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL \
     CI=1 \
     EXPO_NO_TELEMETRY=1
-RUN npm ci --prefix mobile --no-audit --no-fund && \
-    npx --prefix mobile expo export --platform web --output-dir mobile/dist
+RUN npx expo export --platform web --output-dir dist
 
 # ---------- Étape 2 : serveur statique + proxy /api ----------
 FROM node:22-alpine
