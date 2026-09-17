@@ -1,0 +1,50 @@
+# Scoot Master — pile complète (API + application web)
+#
+#   docker compose up -d --build
+#   → Application web : http://localhost:8080
+#   → API             : http://localhost:4000
+#
+# Comptes de démonstration : admin / admin123 — vendeur / vendeur123
+# (Changez JWT_SECRET en production.)
+
+services:
+  api:
+    build:
+      context: ./backend
+    image: scoot-master-api:latest
+    restart: unless-stopped
+    environment:
+      PORT: "4000"
+      DB_PATH: /app/data/scoot.db
+      JWT_SECRET: ${JWT_SECRET:-changez-moi-en-production}
+      CORS_ORIGIN: "*"
+      SEED_ON_START: ${SEED_ON_START:-true}
+    volumes:
+      - api-data:/app/data
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: mobile/Dockerfile
+      args:
+        # URL d'API relative (même origine, proxy /api vers le service api)
+        EXPO_PUBLIC_API_URL: ""
+    image: scoot-master-web:latest
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      PORT: "8080"
+      API_TARGET: http://api:4000
+    ports:
+      - "8080:8080"
+
+volumes:
+  api-data:

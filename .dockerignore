@@ -1,0 +1,10 @@
+**/node_modules
+**/.expo
+**/.web
+**/dist
+backend/data
+backend/storage
+backend/.env
+.git
+*.log
+.DS_Store

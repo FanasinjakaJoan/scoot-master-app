@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: 🧪 Tests backend (API)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  backend-smoke:
+    name: 💨 Smoke test backend (démarrage + /api/health)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Démarrer le serveur et vérifier la santé
+        run: |
+          node src/server.js &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4000/api/health; then OK=1; break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:4000/api/health
+          TOKEN=$(curl -sf -X POST http://127.0.0.1:4000/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"admin123"}' | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).token))")
+          test -n "$TOKEN" && echo "::notice::Login démo OK"
+          curl -sf -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4000/api/bikes?limit=1 >/dev/null
+          kill $SERVER_PID
+
+  mobile-tests:
+    name: 🧪 Tests mobile (Jest) + TypeScript
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - name: Vérification TypeScript
+        run: npx tsc --noEmit
+      - name: Tests unitaires
+        run: npx jest --ci
+
+  docker-build:
+    name: 🐳 Build des images Docker
+    runs-on: ubuntu-latest
+    needs: [backend-tests, mobile-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Image API
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: scoot-master-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: Image Web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mobile/Dockerfile
+          push: false
+          tags: scoot-master-web:ci
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
