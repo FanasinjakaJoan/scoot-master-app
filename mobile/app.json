@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Scoot Master",
+    "slug": "scoot-master-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F6F7F9",
+    "splash": {
+      "backgroundColor": "#F6F7F9"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Scoot Master utilise la galerie pour ajouter des photos aux motos."
+      }
+    },
+    "android": {
+      "package": "mg.scootmaster.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#F6F7F9",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": ["READ_MEDIA_IMAGES"],
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Scoot Master utilise la galerie pour ajouter des photos aux motos."
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

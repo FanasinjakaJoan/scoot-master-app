@@ -1,0 +1,22 @@
+{
+  "name": "scoot-master-backend",
+  "version": "1.0.0",
+  "description": "API de synchronisation Scoot Master — catalogue, ventes, clients, sync offline-first, exports",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/auth.test.js tests/api.test.js tests/sync.test.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

@@ -1,0 +1,22 @@
+# Node
+node_modules/
+npm-debug.log*
+*.log
+
+# Backend
+backend/data/
+backend/storage/
+backend/.env
+
+# Mobile / Expo
+mobile/node_modules/
+mobile/dist/
+mobile/.expo/
+mobile/.web/
+mobile/*.orig.*
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
