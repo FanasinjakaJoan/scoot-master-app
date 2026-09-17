@@ -73,7 +73,11 @@ avec résolution de conflits et exports JSON/CSV.
 ```
 scoot-master-app/
 ├── README.md                  ← ce fichier
+├── docker-compose.yml         ← pile complète : API + app web (1 commande)
+├── .github/workflows/         ← CI (tests, typecheck, build Docker) + CD (GHCR)
+├── deploy/web-server.js       ← serveur web statique + proxy /api (zéro dépendance)
 ├── docs/
+│   ├── DEPLOYMENT.md          ← conteneurisation, CI/CD, tester sur PC/mobile
 │   ├── INSTALLATION.md        ← installation pas à pas (backend + mobile)
 │   ├── DATABASE_SCHEMA.md     ← schéma local & cloud, dictionnaire de données
 │   ├── SYNC.md                ← logique de synchronisation offline-first
@@ -87,9 +91,12 @@ scoot-master-app/
 │   │   ├── middleware/        ← auth JWT, rôles, erreurs
 │   │   ├── services/sync.js   ← moteur push/pull, LWW, force, renumérotation
 │   │   └── routes/            ← auth, bikes, customers, sales, sync, exports
-│   └── tests/                 ← 24 tests (node:test) : API, auth, sync
+│   ├── tests/                 ← 24 tests (node:test) : API, auth, sync
+│   └── Dockerfile             ← image de production de l'API
 └── mobile/                    ← App React Native (Expo SDK 57, TypeScript)
     ├── App.tsx
+    ├── Dockerfile             ← image web (expo export --platform web + proxy /api)
+    ├── metro.config.js        ← support WASM (expo-sqlite web) + COOP/COEP
     ├── src/
     │   ├── store/AppStore.tsx ← session, réseau, orchestration sync, hooks
     │   ├── navigation/        ← onglets + pile (React Navigation v7)
@@ -150,7 +157,27 @@ npx expo start       # scanner avec l'app Expo Go (ou npm run android / ios)
 |---|---|---|
 | Backend | `cd backend && npm test` | 24 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sync push/pull, LWW, conflits, `force` admin, renumérotation des bons, pagination par curseur |
 | Mobile | `cd mobile && npm test` | 12 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne |
-| Bundle | `cd mobile && npx expo export --platform android` | vérifie que l'app complète se bundle (Hermes) |
+| Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
+| Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, wasm inclus) |
+
+## 🐳 Docker & CI/CD
+
+Déploiement complet en une commande (API + application web) :
+
+```bash
+docker compose up -d --build
+# → app web : http://localhost:8080   (PC et navigateur mobile)
+# → API     : http://localhost:4000   (admin / admin123)
+```
+
+- **CI** (`.github/workflows/ci.yml`) : tests backend, smoke test API,
+  TypeScript + Jest mobile, build des images Docker — à chaque push / PR.
+- **CD** (`.github/workflows/deploy.yml`) : publication automatique des
+  images `scoot-master-api` et `scoot-master-web` sur GitHub Container
+  Registry à chaque merge sur `main`.
+
+Détails complets (serveur, GHCR, tests sur PC / mobile / Expo Go) :
+📖 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 ## ️ Base de données
 

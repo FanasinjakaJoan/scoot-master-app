@@ -3,9 +3,8 @@ import React, {
 } from 'react';
 import { AppState, Platform } from 'react-native';
 import { useNetworkState } from 'expo-network';
-import * as SecureStore from 'expo-secure-store';
-import { File, Paths } from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+
+import { secureGet, secureSet, secureDelete } from '../lib/secureStorage';
 
 import { login as apiLogin, ApiError } from '../data/api/client';
 import * as repo from '../data/local/repositories';
@@ -84,8 +83,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const t = await SecureStore.getItemAsync(TOKEN_KEY);
-        const u = await SecureStore.getItemAsync(USER_KEY);
+        const t = await secureGet(TOKEN_KEY);
+        const u = await secureGet(USER_KEY);
         if (t && u) {
           setToken(t);
           setUser(JSON.parse(u) as User);
@@ -144,8 +143,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // ---- session ----
   const doLogin = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);
-    await SecureStore.setItemAsync(TOKEN_KEY, res.token);
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(res.user));
+    await secureSet(TOKEN_KEY, res.token);
+    await secureSet(USER_KEY, JSON.stringify(res.user));
     setToken(res.token);
     setUser({ id: res.user.id, username: res.user.username, fullName: res.user.fullName, role: res.user.role as User['role'] });
     setSync(readSyncStatus());
@@ -153,8 +152,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [scheduleSync]);
 
   const doLogout = useCallback(async () => {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-    await SecureStore.deleteItemAsync(USER_KEY);
+    await secureDelete(TOKEN_KEY);
+    await secureDelete(USER_KEY);
     setToken(null);
     setUser(null);
   }, []);
@@ -231,6 +230,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // ---- exports / sauvegarde ----
   const writeAndShare = useCallback(async (fileName: string, content: string, mime: string) => {
+    if (Platform.OS === 'web') {
+      // Navigateur (PC / mobile) : téléchargement direct du fichier.
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return;
+    }
+    // Natif : modules non-web chargés à la demande.
+    const { File, Paths } = require('expo-file-system') as typeof import('expo-file-system');
+    const Sharing = require('expo-sharing') as typeof import('expo-sharing');
     const file = new File(Paths.document, fileName);
     file.write(content);
     if (await Sharing.isAvailableAsync()) {
