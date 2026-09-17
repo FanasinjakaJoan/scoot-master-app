@@ -59,19 +59,22 @@ docker build -f mobile/Dockerfile -t scoot-master-web .   # contexte = racine du
 
 Publie automatiquement sur **GitHub Container Registry** :
 
-- `ghcr.io/<org>/scoot-master-app/scoot-master-api:latest` (+ tag `sha-<commit>`)
-- `ghcr.io/<org>/scoot-master-app/scoot-master-web:latest` (+ tag `sha-<commit>`)
+- `ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-api:latest` (+ tag `sha-<commit>`)
+- `ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-web:latest` (+ tag `sha-<commit>`)
+
+> Les noms d'images GHCR sont entièrement en minuscules (le nom du dépôt est
+> converti automatiquement par le workflow).
 
 ### Déployer sur un serveur avec les images GHCR
 
 ```bash
 docker login ghcr.io -u <utilisateur> -p <token-lecture-packages>
-docker pull ghcr.io/<org>/scoot-master-app/scoot-master-api:latest
-docker pull ghcr.io/<org>/scoot-master-app/scoot-master-web:latest
+docker pull ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-api:latest
+docker pull ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-web:latest
 docker run -d --name api -p 4000:4000 -v scoot-data:/app/data \
-  -e JWT_SECRET=<secret-fort> ghcr.io/<org>/scoot-master-app/scoot-master-api:latest
+  -e JWT_SECRET=<secret-fort> ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-api:latest
 docker run -d --name web -p 8080:8080 -e API_TARGET=http://api:4000 \
-  --link api ghcr.io/<org>/scoot-master-app/scoot-master-web:latest
+  --link api ghcr.io/fanasinjakajoan/scoot-master-app/scoot-master-web:latest
 ```
 
 (ou adaptez `docker-compose.yml` avec ces images au lieu des `build:`)
