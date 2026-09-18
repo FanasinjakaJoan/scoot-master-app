@@ -112,6 +112,42 @@ test('session : durée longue, renouvellement tolérant, révocation effective',
       const res = await api(srv.base, victim.token, 'POST', '/api/auth/refresh');
       assert.equal(res.status, 401, 'un compte supprimé ne peut plus renouveler sa session');
     });
+
+    await t.test('sync : session maintenue pendant la synchronisation (401 renouvelable → refresh → push/pull OK)', async () => {
+      const me = await login(srv.base);
+      const stale = expiredToken({ id: me.user.id, username: me.user.username, role: me.user.role, fullName: me.user.fullName }, 3600);
+      const pushBody = {
+        deviceId: 'dev-session-test',
+        operations: [{
+          entity: 'bikes', op: 'create', id: 'b-session-keep',
+          payload: { brand: 'Yamaha', model: 'YBR 125', price: 900000 },
+          clientTs: new Date().toISOString(),
+        }],
+      };
+
+      // 1) Un cycle démarré avec un jeton expiré est rejeté sur push ET pull,
+      //    mais signalé comme renouvelable (`expired: true`) : le client doit
+      //    tenter un renouvellement transparent, pas déconnecter.
+      const denied = await api(srv.base, stale, 'POST', '/api/sync/push', pushBody);
+      assert.equal(denied.status, 401);
+      assert.equal(denied.body.expired, true);
+      const deniedPull = await api(srv.base, stale, 'GET', '/api/sync/pull?since=1970-01-01T00:00:00.000Z');
+      assert.equal(deniedPull.status, 401);
+      assert.equal(deniedPull.body.expired, true);
+
+      // 2) Le même jeton expiré renouvelle la session…
+      const renewed = await api(srv.base, stale, 'POST', '/api/auth/refresh');
+      assert.equal(renewed.status, 200, 'le renouvellement doit être accepté');
+      assert.ok(renewed.body.token);
+
+      // 3) …et le cycle reprend avec le jeton frais : push appliqué, pull servi.
+      const pushed = await api(srv.base, renewed.body.token, 'POST', '/api/sync/push', pushBody);
+      assert.equal(pushed.status, 200);
+      assert.equal(pushed.body.results[0].status, 'ok');
+      const pulled = await api(srv.base, renewed.body.token, 'GET', '/api/sync/pull?since=1970-01-01T00:00:00.000Z');
+      assert.equal(pulled.status, 200);
+      assert.ok(Array.isArray(pulled.body.changes));
+    });
   } finally {
     await srv.close();
   }

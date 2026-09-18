@@ -2,6 +2,7 @@ import { pushOperations, pullChanges, uploadBackup, ApiError } from '../api/clie
 import { localDb } from '../local/db';
 import * as repo from '../local/repositories';
 import { PUSH_BATCH_SIZE, MAX_ATTEMPTS } from '../../lib/config';
+import { needsRefresh } from '../../lib/jwt';
 import { toCsv, CsvColumn } from '../../lib/csv';
 import type { User, SyncStatus } from '../../types';
 
@@ -13,12 +14,40 @@ import type { User, SyncStatus } from '../../types';
  * La file locale est la source de vérité hors ligne ; chaque mutation locale
  * (repositories.ts) y dépose une opération avant tout évanouissement possible.
  *
- * Résilience auth (401/403) : une erreur d'authentification ne purge JAMAIS la
- * file. Les opérations sont marquées « suspendues pour raison d'authentification »
- * (statut conservé = pending, sans brûler de tentative), un signal persistant
- * `sync_meta.auth_required` est levé pour l'UI, et la transmission reprendra
- * automatiquement dès qu'un jeton valide sera réinjecté (reconnexion).
+ * Maintien de session PENDANT la transmission (`keeper`) : un cycle long
+ * (file volumineuse, pull paginé) peut dépasser l'échéance du jeton. Le moteur
+ * renouvelle donc le jeton entre deux lots/pages quand il approche de
+ * l'échéance (proactif) et, sur un 401 en cours de route, renouvelle puis
+ * rejoue UNE fois la requête fautive avec le jeton frais (réactif) — la
+ * synchronisation se termine sans déconnecter l'utilisateur.
+ *
+ * Résilience auth (401/403 persistant) : une erreur d'authentification ne
+ * purge JAMAIS la file. Les opérations sont marquées « suspendues pour raison
+ * d'authentification » (statut conservé = pending, sans brûler de tentative),
+ * un signal persistant `sync_meta.auth_required` est levé pour l'UI, et la
+ * transmission reprendra automatiquement dès qu'un jeton valide sera
+ * réinjecté (renouvellement ou reconnexion).
  */
+
+/**
+ * Résultat d'une tentative de renouvellement de session :
+ * - `{ ok: true, token }` : session maintenue, poursuivre avec le jeton frais ;
+ * - `{ ok: false, refused: true }` : refus EXPLICITE du serveur (compte
+ *   supprimé/désactivé, secret changé, grâce dépassée) — fin de session réelle ;
+ * - `{ ok: false, refused: false }` : échec TRANSITOIRE (hors ligne, réseau
+ *   instable, serveur en veille, 5xx) — garder la session et réessayer plus tard.
+ */
+export type SessionRefreshResult =
+  | { ok: true; token: string }
+  | { ok: false; refused: boolean };
+
+/**
+ * Maintien de session injecté par le store : le moteur reste agnostique du
+ * stockage du jeton, c'est l'appelant qui renouvelle (vol unique) et persiste.
+ */
+export interface SyncSessionKeeper {
+  refreshSession: () => Promise<SessionRefreshResult>;
+}
 
 export interface SyncOutcome {
   pushed: number;
@@ -29,6 +58,14 @@ export interface SyncOutcome {
   error?: string;
   /** true si le cycle a été stoppé par une erreur d'authentification (401/403). */
   authRequired?: boolean;
+  /**
+   * true si le serveur a EXPLICITEMENT refusé le renouvellement pendant le
+   * cycle (vraie fin de session). Faux/absent = échec transitoire : la session
+   * doit être GARDÉE (utilisateur connecté, file suspendue, reprise auto).
+   */
+  authRefused?: boolean;
+  /** true si la session a été renouvelée en cours de cycle (transmission maintenue). */
+  sessionRenewed?: boolean;
 }
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
@@ -41,6 +78,25 @@ const META_LAST_ERROR = 'last_sync_error';
 /** Erreur d'authentification renvoyée par l'API (401 non authentifié / 403 interdit). */
 export function isAuthError(e: unknown): e is ApiError {
   return e instanceof ApiError && (e.status === 401 || e.status === 403);
+}
+
+/**
+ * Le renouvellement de session a été EXPLICITEMENT refusé par le serveur pour
+ * cette erreur (vraie fin de session). Le signal est tamponné sur l'erreur
+ * avant propagation, pour que `runSyncCycle` distingue « session refusée »
+ * (reconnecter) de « panne transitoire » (garder la session, réessayer).
+ */
+export function wasRefreshRefused(e: unknown): boolean {
+  return (
+    typeof e === 'object' && e !== null &&
+    (e as { refreshRefused?: boolean }).refreshRefused === true
+  );
+}
+
+function stampRefreshRefused(e: unknown, refused: boolean): void {
+  if (refused && typeof e === 'object' && e !== null) {
+    (e as { refreshRefused?: boolean }).refreshRefused = true;
+  }
 }
 
 /**
@@ -65,11 +121,75 @@ export function clearAuthSuspension(): void {
   repo.metaSet(META_LAST_ERROR, '');
 }
 
+// ---------------------------------------------------------------------
+// Maintien de session pendant la transmission (proactif + réactif)
+// ---------------------------------------------------------------------
+
+/** État d'authentification partagé par les phases d'un même cycle. */
+interface CycleAuth {
+  keeper?: SyncSessionKeeper;
+  /** La session a été renouvelée au moins une fois pendant le cycle. */
+  renewed: boolean;
+  /** Le serveur a explicitement refusé le renouvellement (fin de session). */
+  refused: boolean;
+}
+
+/**
+ * Renouvellement PROACTIF : avant chaque lot/page, si le jeton approche de
+ * son échéance, il est renouvelé — une transmission longue ne bute jamais sur
+ * une expiration prévisible. Best-effort : en cas d'échec, on poursuit avec le
+ * jeton courant (un éventuel 401 déclenchera la voie réactive).
+ */
+async function maybeProactiveRefresh(current: string, auth: CycleAuth): Promise<string> {
+  if (!auth.keeper || auth.refused || !needsRefresh(current)) return current;
+  try {
+    const r = await auth.keeper.refreshSession();
+    if (r.ok) {
+      auth.renewed = true;
+      return r.token;
+    }
+    if (r.refused) auth.refused = true;
+  } catch { /* best-effort : le lot décidera */ }
+  return current;
+}
+
+/**
+ * Renouvellement RÉACTIF : après un 401 en cours de transmission, tente UNE
+ * fois de maintenir la session. Renvoie le jeton frais, ou null (refus
+ * définitif ou panne transitoire — distingués via `auth.refused`).
+ */
+async function tryHealSession(auth: CycleAuth): Promise<string | null> {
+  if (!auth.keeper || auth.refused) return null;
+  try {
+    const r = await auth.keeper.refreshSession();
+    if (r.ok) {
+      auth.renewed = true;
+      return r.token;
+    }
+    if (r.refused) auth.refused = true;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface PushOutcome {
+  pushed: number;
+  conflicts: number;
+  errors: number;
+  /** Jeton en vigueur à la fin du push (renouvelé ou non) — à répercuter au pull. */
+  token: string;
+  sessionRenewed: boolean;
+  authRefused: boolean;
+}
+
 /** Pousse la file locale (par lots) et met à jour son état. */
-export async function pushQueue(token: string, deviceId: string, maxBatches = 10): Promise<{ pushed: number; conflicts: number; errors: number }> {
+export async function pushQueue(token: string, deviceId: string, maxBatches = 10, keeper?: SyncSessionKeeper): Promise<PushOutcome> {
   let pushed = 0;
   let conflicts = 0;
   let errors = 0;
+  let current = token;
+  const auth: CycleAuth = { keeper, renewed: false, refused: false };
 
   for (let batch = 0; batch < maxBatches; batch++) {
     // Seuls 'pending' et 'failed' sont re-poussés automatiquement ;
@@ -77,16 +197,45 @@ export async function pushQueue(token: string, deviceId: string, maxBatches = 10
     const batchOps = repo.pendingOperations(PUSH_BATCH_SIZE, ['pending', 'failed']);
     if (!batchOps.length) break;
 
+    current = await maybeProactiveRefresh(current, auth);
+
     let res;
     try {
-      res = await pushOperations(token, deviceId, batchOps);
+      res = await pushOperations(current, deviceId, batchOps);
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) break; // hors ligne : on stoppe proprement
-      if (isAuthError(e)) {
-        // 401/403 : file conservée, tentative suspendue pour raison d'auth.
-        suspendQueueForAuth();
+      if (e instanceof ApiError && e.status === 401) {
+        // Le jeton a expiré ENTRE deux lots : on maintient la session (UN
+        // renouvellement) puis on rejoue CE lot avec le jeton frais.
+        // (403 = accès refusé malgré un jeton valide : le renouvellement
+        // n'y changerait rien, on suspend directement.)
+        const healed = await tryHealSession(auth);
+        if (healed) {
+          current = healed;
+          try {
+            res = await pushOperations(current, deviceId, batchOps);
+          } catch (retryError) {
+            if (retryError instanceof ApiError && retryError.status === 0) break; // réseau tombé entre-temps
+            if (isAuthError(retryError)) {
+              suspendQueueForAuth();
+              stampRefreshRefused(retryError, auth.refused);
+            }
+            throw retryError;
+          }
+        } else {
+          // 401/403 : file conservée, tentative suspendue pour raison d'auth.
+          suspendQueueForAuth();
+          stampRefreshRefused(e, auth.refused);
+          throw e;
+        }
+      } else {
+        if (isAuthError(e)) {
+          // 401/403 : file conservée, tentative suspendue pour raison d'auth.
+          suspendQueueForAuth();
+          stampRefreshRefused(e, auth.refused);
+        }
+        throw e;
       }
-      throw e;
     }
 
     res.results.forEach((r, i) => {
@@ -118,7 +267,7 @@ export async function pushQueue(token: string, deviceId: string, maxBatches = 10
       }
     });
   }
-  return { pushed, conflicts, errors };
+  return { pushed, conflicts, errors, token: current, sessionRenewed: auth.renewed, authRefused: auth.refused };
 }
 
 function localDbUpdateSaleNumber(saleId: string, saleNumber: string): void {
@@ -128,8 +277,10 @@ function localDbUpdateSaleNumber(saleId: string, saleNumber: string): void {
 }
 
 /** Tire les changements serveur depuis `since` et les applique (LWW local). */
-export async function pullChangesLocal(token: string): Promise<{ pulled: number; serverTime: string }> {
+export async function pullChangesLocal(token: string, keeper?: SyncSessionKeeper): Promise<{ pulled: number; serverTime: string; sessionRenewed: boolean; authRefused: boolean }> {
   const since = repo.metaGet('last_pull_since') || EPOCH;
+  let current = token;
+  const auth: CycleAuth = { keeper, renewed: false, refused: false };
   let cursor: string | null = null;
   let pulled = 0;
   let serverTime = since;
@@ -137,7 +288,44 @@ export async function pullChangesLocal(token: string): Promise<{ pulled: number;
 
   try {
     do {
-      const page = await pullChanges(token, since, cursor, 500);
+      current = await maybeProactiveRefresh(current, auth);
+      let page;
+      try {
+        page = await pullChanges(current, since, cursor, 500);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          // Jeton expiré au milieu du pull paginé : UN renouvellement puis on
+          // rejoue LA MÊME page (curseur inchangé — aucune page rejouée ni
+          // sautée, aucun doublon).
+          const healed = await tryHealSession(auth);
+          if (healed) {
+            current = healed;
+            try {
+              page = await pullChanges(current, since, cursor, 500);
+            } catch (retryError) {
+              if (isAuthError(retryError)) {
+                suspendQueueForAuth();
+                stampRefreshRefused(retryError, auth.refused);
+              }
+              throw retryError;
+            }
+          } else {
+            // 401/403 au PULL : la file et le curseur `last_pull_since` sont
+            // conservés intacts — aucune donnée ne sera sautée à la reprise.
+            suspendQueueForAuth();
+            stampRefreshRefused(e, auth.refused);
+            throw e;
+          }
+        } else {
+          if (isAuthError(e)) {
+            // 401/403 au PULL : la file et le curseur `last_pull_since` sont
+            // conservés intacts — aucune donnée ne sera sautée à la reprise.
+            suspendQueueForAuth();
+            stampRefreshRefused(e, auth.refused);
+          }
+          throw e;
+        }
+      }
       serverTime = page.serverTime;
       for (const change of page.changes) {
         const applied = repo.applyServerChange(
@@ -153,29 +341,32 @@ export async function pullChangesLocal(token: string): Promise<{ pulled: number;
       safety++;
     } while (cursor && safety < 50);
   } catch (e) {
-    if (isAuthError(e)) {
-      // 401/403 au PULL : la file et le curseur `last_pull_since` sont conservés
-      // intacts — aucune donnée ne sera sautée à la reconnexion.
-      suspendQueueForAuth();
-    }
+    // La suspension éventuelle a déjà été posée par le traitement de la page
+    // (ci-dessus) ; on propage tel quel vers runSyncCycle.
     throw e;
   }
 
   repo.metaSet('last_pull_since', serverTime);
-  return { pulled, serverTime };
+  return { pulled, serverTime, sessionRenewed: auth.renewed, authRefused: auth.refused };
 }
 
 /** Cycle complet de synchronisation (push puis pull). */
-export async function runSyncCycle(token: string, deviceId: string): Promise<SyncOutcome> {
+export async function runSyncCycle(token: string, deviceId: string, keeper?: SyncSessionKeeper): Promise<SyncOutcome> {
   const outcome: SyncOutcome = { pushed: 0, conflicts: 0, errors: 0, pulled: 0, serverTime: null };
   try {
-    const push = await pushQueue(token, deviceId);
+    const push = await pushQueue(token, deviceId, 10, keeper);
     outcome.pushed = push.pushed;
     outcome.conflicts = push.conflicts;
     outcome.errors = push.errors;
-    const pull = await pullChangesLocal(token);
+    if (push.sessionRenewed) outcome.sessionRenewed = true;
+    if (push.authRefused) outcome.authRefused = true;
+    // Le pull réutilise le jeton en vigueur (éventuellement renouvelé pendant
+    // le push) : une session maintenue en phase 1 reste valide en phase 2.
+    const pull = await pullChangesLocal(push.token, keeper);
     outcome.pulled = pull.pulled;
     outcome.serverTime = pull.serverTime;
+    if (pull.sessionRenewed) outcome.sessionRenewed = true;
+    if (pull.authRefused) outcome.authRefused = true;
     // Succès : le jeton en vigueur est valide — lève toute suspension d'auth.
     if (repo.metaGet(META_AUTH_REQUIRED) === '1') clearAuthSuspension();
     repo.metaSet('last_sync_at', new Date().toISOString());
@@ -184,6 +375,10 @@ export async function runSyncCycle(token: string, deviceId: string): Promise<Syn
   } catch (e) {
     if (isAuthError(e)) {
       outcome.authRequired = true;
+      // Refus explicite du serveur (tamponné avant propagation) ou simple
+      // panne transitoire : l'appelant (store) reconnecte dans le premier cas
+      // et GARDE la session dans le second.
+      if (wasRefreshRefused(e)) outcome.authRefused = true;
       outcome.error = 'Session expirée — réauthentification requise. Modifications conservées localement.';
     } else {
       outcome.error = e instanceof Error ? e.message : 'Erreur de synchronisation inconnue.';
@@ -209,7 +404,7 @@ export function resolveConflictKeepServer(queueId: number): void {
 }
 
 /** Forcer ma version (admin uniquement) : renvoie l'opération avec force=true. */
-export async function resolveConflictForceMine(token: string, deviceId: string, queueId: number, user: User): Promise<boolean> {
+export async function resolveConflictForceMine(token: string, deviceId: string, queueId: number, user: User, keeper?: SyncSessionKeeper): Promise<boolean> {
   if (user.role !== 'admin') {
     throw new Error('La validation administrative (forcer) est réservée au rôle admin.');
   }
@@ -218,7 +413,23 @@ export async function resolveConflictForceMine(token: string, deviceId: string, 
   repo.markQueueOperation(queueId, { status: 'pending', force: true, lastError: null });
   const [updated] = repo.pendingOperations(1000).filter((o) => o.id === queueId);
   if (!updated) return false;
-  const res = await pushOperations(token, deviceId, [updated]);
+  const auth: CycleAuth = { keeper, renewed: false, refused: false };
+  let current = await maybeProactiveRefresh(token, auth);
+  let res;
+  try {
+    res = await pushOperations(current, deviceId, [updated]);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      // Session expirée entre l'ouverture de l'écran et l'envoi : UN
+      // renouvellement puis on rejoue l'envoi forcé avec le jeton frais.
+      const healed = await tryHealSession(auth);
+      if (!healed) throw e;
+      current = healed;
+      res = await pushOperations(current, deviceId, [updated]);
+    } else {
+      throw e;
+    }
+  }
   const r = res.results[0];
   if (r.status === 'ok') {
     if (updated.entity === 'sales' && r.saleNumber) localDbUpdateSaleNumber(updated.entity_id, r.saleNumber);
@@ -313,16 +524,34 @@ export function localBackupSpec(): ExportSpec {
 }
 
 /** Téléverse la sauvegarde locale vers le serveur (option cloud interne). */
-export async function uploadLocalBackup(token: string, fileName: string): Promise<string> {
+export async function uploadLocalBackup(token: string, fileName: string, keeper?: SyncSessionKeeper): Promise<string> {
+  const auth: CycleAuth = { keeper, renewed: false, refused: false };
+  const current = await maybeProactiveRefresh(token, auth);
   try {
-    const res = await uploadBackup(token, fileName, repo.localBackup());
+    const res = await uploadBackup(current, fileName, repo.localBackup());
     // Succès : une éventuelle attente de re-tentative post-réauth est soldée.
     repo.metaSet('pending_backup_upload', '0');
     return res.file;
   } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      // Session expirée pendant l'envoi : UN renouvellement puis on rejoue le
+      // téléversement avec le jeton frais, sans perdre la sauvegarde.
+      const healed = await tryHealSession(auth);
+      if (healed) {
+        try {
+          const res = await uploadBackup(healed, fileName, repo.localBackup());
+          repo.metaSet('pending_backup_upload', '0');
+          return res.file;
+        } catch (retryError) {
+          if (isAuthError(retryError)) repo.metaSet('pending_backup_upload', '1');
+          throw retryError;
+        }
+      }
+    }
     if (isAuthError(e)) {
       // Mémorise la demande : elle sera re-tentée automatiquement dès qu'un
-      // jeton valide sera réinjecté (reconnexion), sans perdre la sauvegarde.
+      // jeton valide sera réinjecté (renouvellement ou reconnexion), sans
+      // perdre la sauvegarde.
       repo.metaSet('pending_backup_upload', '1');
     }
     throw e;

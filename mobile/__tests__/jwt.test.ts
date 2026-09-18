@@ -5,7 +5,7 @@
 
 import {
   decodeJwt, isTokenExpired, isTokenExpiringSoon, jwtExpiresAt,
-  isTokenUnusable, needsRefresh, CLOCK_SKEW_TOLERANCE_MS,
+  isTokenUnusable, needsRefresh, EXPIRED_TOKEN_GRACE_MS,
 } from '../src/lib/jwt';
 
 function makeToken(payload: Record<string, unknown>): string {
@@ -55,9 +55,19 @@ describe('lib/jwt — tolérance d’horloge et renouvellement', () => {
     expect(isTokenUnusable(justExpired)).toBe(false); // …mais on ne déconnecte pas
   });
 
-  it('un jeton expiré au-delà de la tolérance est déclaré inutilisable', () => {
-    const ancient = makeToken({ exp: sec(Date.now() - CLOCK_SKEW_TOLERANCE_MS - 60_000) });
+  it('un jeton expiré au-delà de la grâce est déclaré inutilisable', () => {
+    const ancient = makeToken({ exp: sec(Date.now() - EXPIRED_TOKEN_GRACE_MS - 60_000) });
     expect(isTokenUnusable(ancient)).toBe(true);
+  });
+
+  it('un jeton expiré depuis des semaines reste renouvelable (retour de hors-ligne)', () => {
+    // Appareil resté hors ligne 30 jours : le jeton est expiré, mais dans la
+    // fenêtre de grâce miroir du serveur — il DOIT partir en renouvellement
+    // (seul le serveur tranche), jamais en déconnexion locale.
+    const offlineMonth = makeToken({ exp: sec(Date.now() - 30 * 86400 * 1000) });
+    expect(isTokenExpired(offlineMonth)).toBe(true);
+    expect(isTokenUnusable(offlineMonth)).toBe(false);
+    expect(needsRefresh(offlineMonth)).toBe(true);
   });
 
   it('jeton absent ou malformé : inutilisable', () => {

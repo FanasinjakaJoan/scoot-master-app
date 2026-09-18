@@ -84,13 +84,15 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
       {app.sync.authRequired ? (
         <Card style={{ borderColor: colors.warning + '88' }}>
           <Text style={[textStyles.caption, { color: colors.warning, fontWeight: '700' }]}>
-            🔐 Réauthentification requise
+            🔐 Session à renouveler
           </Text>
           <Text style={[textStyles.caption, { marginTop: 4 }]}>
-            Votre session a expiré ou l'accès a été refusé : la transmission est suspendue, mais
-            rien n'est perdu — vos {app.sync.pendingCount} modification(s) en attente et vos sauvegardes
-            restent conservées sur cet appareil. Déconnectez-vous puis reconnectez-vous pour reprendre
-            automatiquement la synchronisation.
+            Votre session n'a pas pu être renouvelée pour l'instant (connexion instable ou accès
+            refusé) : la transmission est suspendue, mais rien n'est perdu — vos {app.sync.pendingCount} modification(s)
+            en attente et vos sauvegardes restent conservées sur cet appareil, et vous restez
+            connecté. La synchronisation reprendra automatiquement dès le retour du réseau, ou
+            touchez « Synchroniser maintenant ». Si le serveur refuse définitivement la session
+            (compte désactivé…), vous serez invité à vous reconnecter, sans perdre vos données.
           </Text>
         </Card>
       ) : null}
