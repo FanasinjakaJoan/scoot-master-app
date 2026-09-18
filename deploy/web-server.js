@@ -23,7 +23,16 @@ const path = require('path');
 
 const PORT = Number(process.env.PORT || 8080);
 const WEB_ROOT = path.resolve(__dirname, '..', process.env.WEB_ROOT || path.join('mobile', 'dist'));
-const API_TARGET = process.env.API_TARGET || 'http://127.0.0.1:4000';
+// Render Blueprint peut injecter hostport sans schéma (ex: scoot-master-api:10000)
+// On normalise pour accepter les deux formes : "http://host:port" ou "host:port".
+function normalizeApiTarget(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return 'http://127.0.0.1:4000';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Si pas de schéma, on préfixe http:// (réseau privé Render)
+  return `http://${trimmed}`;
+}
+const API_TARGET = normalizeApiTarget(process.env.API_TARGET || 'http://127.0.0.1:4000');
 const API_URL = new URL(API_TARGET);
 
 const MIME = {

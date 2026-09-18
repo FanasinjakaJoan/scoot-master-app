@@ -1,7 +1,9 @@
 # 🚢 Déploiement & CI/CD — Scoot Master
 
-Ce document décrit la conteneurisation, la pipeline CI/CD et les façons de
+Ce document décrit la conteneurisation, la pipeline CI/CD, l'hébergement sur **Render** et les façons de
 tester l'application (PC, navigateur mobile, smartphone natif).
+
+> **Hébergement Render ?** Guide complet dédié : [`docs/RENDER.md`](RENDER.md) — Blueprint `render.yaml`, réseau privé, disque persistant, variables, troubleshooting, checklist prod.
 
 ---
 
@@ -130,3 +132,47 @@ cd mobile && npm ci && npx tsc --noEmit && npx jest
 ```
 
 Ces commandes sont exactement celles exécutées par la CI.
+
+---
+
+## 5. Hébergement sur Render (Blueprint)
+
+Render est la cible d'hébergement recommandée pour une démo publique ou une petite production (PME).
+
+### 5.1 Architecture Render — Choix Web Service
+
+**Choix : 2 Web Services (`type: web`), pas Private Service.**
+
+- `scoot-master-api` : **Web Service** Docker + disque persistant 1 GB (`/app/data/scoot.db`), healthcheck `/api/health`
+  - Doit être public pour l'app mobile native Expo Go (qui appelle l'API directement)
+  - Joignable aussi en privé par le web via `fromService: hostport` → `scoot-master-api:10000`
+- `scoot-master-web` : **Web Service** Docker (build Expo web statique) + proxy `/api` → API via réseau privé
+  - Public pour navigateurs PC/mobile, stateless, scalable
+
+> Pourquoi pas Private Service (`pserv`) ? Un `pserv` n'a pas d'URL publique : l'app mobile native ne pourrait plus joindre l'API. On le choisirait uniquement si on voulait que tout passe par le proxy web. Notre choix Web Service permet web + mobile natif + tests directs.
+
+- Build web avec `EXPO_PUBLIC_API_URL=""` → chemins relatifs, pas de CORS
+- Fichier d'infrastructure : `render.yaml` à la racine, avec `type: web` explicite + commentaires choix.
+
+### 5.2 Déploiement en 3 clics
+
+1. Fork le dépôt sur GitHub
+2. Render Dashboard → `New +` → `Blueprint` → sélectionnez le dépôt (Render détecte `render.yaml`)
+3. `Apply` → 2 services se buildent (2-4 min). `SEED_ON_START=true` crée `admin/admin123` au premier démarrage.
+
+URLs :
+- API : `https://scoot-master-api.onrender.com/api/health`
+- Web : `https://scoot-master-web.onrender.com` (login démo)
+
+### 5.3 Variables & réseau privé
+
+- Render injecte `PORT=10000` automatiquement. L'API écoute dessus (`config.js` lit `process.env.PORT`).
+- `API_TARGET` est injecté via `fromService: hostport` → `scoot-master-api:10000`, normalisé en `http://...` par `deploy/web-server.js`.
+- `JWT_SECRET` généré auto (`generateValue: true`), `CORS_ORIGIN=*` en dev, restreignez en prod.
+- Disque obligatoire en `starter` minimum (Free ne supporte pas les disks).
+
+**Guide complet** : [`docs/RENDER.md`](RENDER.md) — 11 sections : architecture détaillée, coûts, logs, domaines custom, scaling, troubleshooting, checklist prod, migration Postgres.
+
+### 5.4 Alternative manuelle
+
+Sans Blueprint : créez 2 Web Services Docker manuellement (Dockerfile paths `./backend/Dockerfile` et `./mobile/Dockerfile`, contexte racine pour le web), ajoutez un disque sur l'API (`/app/data`), et liez `API_TARGET=http://scoot-master-api:10000` (nom interne visible dans Dashboard → Connect → Internal).

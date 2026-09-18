@@ -73,11 +73,13 @@ avec résolution de conflits et exports JSON/CSV.
 ```
 scoot-master-app/
 ├── README.md                  ← ce fichier
-├── docker-compose.yml         ← pile complète : API + app web (1 commande)
+├── render.yaml                ← Blueprint Render : API + Web + disque persistant (1 commande cloud)
+├── docker-compose.yml         ← pile complète locale : API + app web (1 commande)
 ├── .github/workflows/         ← CI (tests, typecheck, build Docker) + CD (GHCR)
 ├── deploy/web-server.js       ← serveur web statique + proxy /api (zéro dépendance)
 ├── docs/
-│   ├── DEPLOYMENT.md          ← conteneurisation, CI/CD, tester sur PC/mobile
+│   ├── RENDER.md              ← déploiement & hébergement sur Render (guide complet)
+│   ├── DEPLOYMENT.md          ← conteneurisation, CI/CD, Render, tester sur PC/mobile
 │   ├── INSTALLATION.md        ← installation pas à pas (backend + mobile)
 │   ├── DATABASE_SCHEMA.md     ← schéma local & cloud, dictionnaire de données
 │   ├── SYNC.md                ← logique de synchronisation offline-first
@@ -160,9 +162,9 @@ npx expo start       # scanner avec l'app Expo Go (ou npm run android / ios)
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, wasm inclus) |
 
-## 🐳 Docker & CI/CD
+## 🐳 Docker & Hébergement
 
-Déploiement complet en une commande (API + application web) :
+### Local (1 commande)
 
 ```bash
 docker compose up -d --build
@@ -170,14 +172,28 @@ docker compose up -d --build
 # → API     : http://localhost:4000   (admin / admin123)
 ```
 
+### Render (Blueprint, 3 clics) — Choix Web Service
+
+```bash
+# render.yaml déclare 2 Web Services (type: web) + disque persistant
+# Choix : Web Service et pas Private Service pour que l'API soit publique
+# (mobile natif Expo Go a besoin de https://scoot-master-api.onrender.com)
+# Dashboard Render → New + → Blueprint → sélectionnez le dépôt → Apply
+# → API : https://scoot-master-api.onrender.com (Web Service, disque 1GB)
+# → Web : https://scoot-master-web.onrender.com (Web Service, proxy /api → API en privé)
+```
+
 - **CI** (`.github/workflows/ci.yml`) : tests backend, smoke test API,
   TypeScript + Jest mobile, build des images Docker — à chaque push / PR.
 - **CD** (`.github/workflows/deploy.yml`) : publication automatique des
   images `scoot-master-api` et `scoot-master-web` sur GitHub Container
   Registry à chaque merge sur `main`.
+- **Render** : Blueprint `render.yaml` avec **2 Web Services** (`type: web` — choix explicite), réseau privé `fromService: hostport` (`scoot-master-api:10000`), healthchecks, disque persistant, `JWT_SECRET` auto-généré
+  - Pourquoi pas `pserv` (private) ? Un private n'a pas d'URL publique → l'app mobile native ne pourrait pas joindre l'API. Web Service = public + privé à la fois.
 
-Détails complets (serveur, GHCR, tests sur PC / mobile / Expo Go) :
-📖 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+Détails complets :
+- 📖 Local & GHCR : [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- 🚀 Render (guide complet, 11 sections) : [`docs/RENDER.md`](docs/RENDER.md)
 
 ## ️ Base de données
 
