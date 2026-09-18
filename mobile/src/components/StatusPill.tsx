@@ -17,7 +17,7 @@ export function StatusPill({
   pending: number;
   conflicts: number;
   failed: number;
-  /** true : 401/403 — réauthentification requise (données locales conservées). */
+  /** true : session à renouveler — transmission suspendue, données locales conservées. */
   authRequired?: boolean;
   onPress?: () => void;
 }) {

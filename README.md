@@ -184,9 +184,9 @@ npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, o
 
 | Couche | Commande | Contenu |
 |---|---|---|
-| Backend | `cd backend && npm test` | 26 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur |
+| Backend | `cd backend && npm test` | 43 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro** |
 | API réelle | `cd backend && npm run check:api` | 36 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
-| Mobile | `cd mobile && npm test` | 52 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché) |
+| Mobile | `cd mobile && npm test` | 74 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde) |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
 | Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
@@ -310,7 +310,11 @@ Résumé (détail : [docs/SYNC.md](docs/SYNC.md)) :
 
 ## 🔐 Sécurité
 
-- Authentification JWT (12 h), mots de passe hachés (bcrypt).
+- Authentification JWT (30 jours, renouvellement glissant via `POST /api/auth/refresh`,
+  grâce de 60 jours pour les appareils restés hors ligne), mots de passe hachés (bcrypt).
+  La session est **maintenue pendant la synchronisation** : renouvellement proactif entre
+  deux lots/pages et rejeu transparent de la requête en 401 — l'utilisateur n'est
+  renvoyé vers la connexion que si le serveur refuse explicitement la session.
 - Rôles : `admin` (suppressions, validation de conflits, sauvegardes serveur) et
   `seller` (catalogue, ventes, clients).
 - En production : changer `JWT_SECRET`, activer HTTPS, restreindre `CORS_ORIGIN`.

@@ -51,6 +51,7 @@ Déclencheurs de synchro (`AppStore.tsx`) :
 | Retour de l'app au premier plan | 0,6 s |
 | Toute mutation locale | 0,8 s (débouncé) |
 | Bouton « Synchroniser maintenant » | immédiat |
+| Échec d'auth transitoire pendant un cycle (session gardée) | relance planifiée à 30 s |
 
 Un verrou (`syncing`) empêche les cycles parallèles ; si le réseau coupe en cours
 de push, le lot reste intact dans `sync_queue` (le serveur traite chaque lot dans
@@ -171,8 +172,8 @@ Dans l'écran **Sync**, chaque conflit propose :
 | Double push du même lot (réseau instable, double envoi) | L'idempotence (même état) et la LWW rendent le re-push sans effet de bord |
 | Lot très volumineux | Découpage côté client par 200 opérations (max serveur : 500) |
 | Échec serveur répété (contrainte, FK) | `error` avec message ; 5 tentatives ⇒ `failed` + relance manuelle depuis l'écran Sync |
-| **Erreur d'authentification (401/403) pendant PUSH ou PULL** | La file n'est **jamais purgée** : les opérations restent `pending`, marquées « Suspendu : réauthentification requise » sans consommer de tentative, le curseur `last_pull_since` n'avance pas. Le client tente d'abord **un renouvellement de session puis rejoue le cycle** ; il ne bascule vers l'écran de connexion que si le serveur refuse explicitement ce renouvellement |
-| **Session expirée au démarrage / en arrière-plan** | La session est **maintenue jusqu'à la déconnexion volontaire**. Le client relit le jeton dans le stockage sécurisé, le renouvelle via `POST /api/auth/refresh` à l'approche de l'échéance (keep-alive toutes les 15 min, au retour au premier plan et avant chaque transmission). L'horloge de l'appareil ne déconnecte jamais : seul un refus serveur le fait — **données locales et file toujours intactes** |
+| **Erreur d'authentification (401/403) pendant PUSH ou PULL** | La session est **maintenue pendant la transmission** : renouvellement proactif entre deux lots/pages quand le jeton approche de l'échéance, et sur 401 en cours de route UN renouvellement (vol unique partagé) puis rejeu de la requête fautive avec le jeton frais — lot push rejoué à l'identique, page pull rejouée au même curseur. Si l'échec persiste, la file n'est **jamais purgée** : opérations `pending` marquées « Suspendu : réauthentification requise » sans consommer de tentative, curseur `last_pull_since` intact. Refus EXPLICITE du serveur (`authRefused`) ⇒ écran de connexion ; panne TRANSITOIRE (réseau, 5xx) ⇒ **session gardée** (utilisateur connecté, relance à 30 s + reprise auto) |
+| **Session expirée au démarrage / en arrière-plan** | La session est **maintenue jusqu'à la déconnexion volontaire**. Le client relit le jeton dans le stockage sécurisé, le renouvelle via `POST /api/auth/refresh` à l'approche de l'échéance (keep-alive toutes les 15 min, au retour au premier plan, avant chaque transmission et pendant celle-ci). Un jeton expiré depuis des semaines reste renouvelable (grâce miroir des 60 jours serveur) : l'horloge de l'appareil ne déconnecte jamais, seul un refus serveur le fait — **données locales et file toujours intactes** |
 | **Téléversement de sauvegarde refusé (401/403)** | La demande est mémorisée (`pending_backup_upload`) et **re-tentée automatiquement** après la reconnexion, avec confirmation à l'utilisateur |
 
 ## 7. Exemple chronologique complet

@@ -13,6 +13,7 @@ import {
   runSyncCycle, readSyncStatus, clearAuthSuspension, resolveConflictKeepServer, resolveConflictForceMine,
   retryFailedOperation, exportLocal, localBackupSpec, uploadLocalBackup,
 } from '../data/sync/engine';
+import type { SyncSessionKeeper } from '../data/sync/engine';
 import { Alert } from '../lib/alert';
 import { deviceIdBase, uuid } from '../lib/uuid';
 import { APP_NAME } from '../lib/config';
@@ -27,6 +28,19 @@ import type {
 
 const TOKEN_KEY = 'sm_token';
 const USER_KEY = 'sm_user';
+
+/**
+ * Issue d'une tentative de renouvellement de session :
+ * - `renewed` : session maintenue (jeton frais persisté) ;
+ * - `refused` : refus EXPLICITE du serveur (401/403 sur /refresh : compte
+ *   supprimé/désactivé, secret changé, grâce dépassée) — vraie fin de session ;
+ * - `unavailable` : renouvellement impossible POUR L'INSTANT (hors ligne,
+ *   réseau instable, serveur en veille, 5xx…) — la session doit être GARDÉE.
+ */
+type RenewOutcome =
+  | { status: 'renewed'; token: string }
+  | { status: 'refused' }
+  | { status: 'unavailable' };
 
 interface AppContextValue {
   // session
@@ -84,6 +98,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const syncingRef = useRef(false);
   const deviceIdRef = useRef<string>('');
   const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Renouvellement en vol (vol unique) : `doSync`, le keep-alive, le retour
+   * au premier plan et les téléversements peuvent demander un refresh au
+   * même moment — une seule requête `POST /api/auth/refresh` part, tous les
+   * appelants partagent son résultat.
+   */
+  const renewInFlight = useRef<Promise<RenewOutcome> | null>(null);
+  /** Référence tardive vers `doSync` (planification sans dépendance circulaire). */
+  const doSyncRef = useRef<() => Promise<void>>(async () => { /* remplacé ci-dessous */ });
   /** Échéance de session (epoch ms) annoncée par le serveur au dernier login/refresh. */
   const expiresAtRef = useRef<number | null>(null);
   const keepAliveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -164,6 +187,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setUser(nextUser);
   }, []);
 
+  // ---- renouvellement de session (vol unique, résultat tri-état) ----
+  /**
+   * Force un renouvellement de session auprès du serveur, quelle que soit
+   * l'échéance locale du jeton.
+   *
+   * - `renewed` : jeton frais (persisté) — la session est maintenue ;
+   * - `refused` : le serveur refuse explicitement (401/403) — vraie fin de
+   *   session (compte désactivé/supprimé, secret changé, grâce dépassée) ;
+   * - `unavailable` : hors ligne, réseau instable, serveur en veille, 5xx… —
+   *   la session est GARDÉE en l'état, on réessayera plus tard.
+   *
+   * Vol unique : les appels concurrents (cycle de synchro, keep-alive, retour
+   * au premier plan…) partagent la même requête en vol. Ne déconnecte jamais
+   * par elle-même : l'appelant décide de la suite.
+   */
+  const renewSession = useCallback(async (): Promise<RenewOutcome> => {
+    if (renewInFlight.current) return renewInFlight.current;
+    const run = (async (): Promise<RenewOutcome> => {
+      const current = tokenRef.current || (await secureGet(TOKEN_KEY).catch(() => null));
+      if (!current || !onlineRef.current) return { status: 'unavailable' };
+      try {
+        const renewed = await apiRefreshToken(current);
+        await persistSession(renewed.token, {
+          id: renewed.user.id,
+          username: renewed.user.username,
+          fullName: renewed.user.fullName,
+          role: renewed.user.role as User['role'],
+        }, renewed.expiresAt);
+        return { status: 'renewed', token: renewed.token };
+      } catch (e) {
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          return { status: 'refused' };
+        }
+        return { status: 'unavailable' };
+      }
+    })();
+    renewInFlight.current = run;
+    try {
+      return await run;
+    } finally {
+      if (renewInFlight.current === run) renewInFlight.current = null;
+    }
+  }, [persistSession]);
+
+  /**
+   * Maintien de session injecté au moteur de synchronisation : renouvelle (vol
+   * unique) et traduit le résultat pour le cycle en cours.
+   */
+  const sessionKeeper = useMemo<SyncSessionKeeper>(() => ({
+    refreshSession: async () => {
+      const r = await renewSession();
+      return r.status === 'renewed'
+        ? { ok: true as const, token: r.token }
+        : { ok: false as const, refused: r.status === 'refused' };
+    },
+  }), [renewSession]);
+
   // ---- jeton : récupération depuis le stockage sécurisé + rafraîchissement ----
   /**
    * Lit le jeton dans le stockage local sécurisé (source de vérité) et le
@@ -173,9 +253,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * L'horloge de l'appareil n'est jamais utilisée pour déconnecter : elle ne
    * sert qu'à décider s'il faut tenter un renouvellement. Un jeton jugé
    * « expiré » localement est donc envoyé à `/api/auth/refresh` (qui tolère
-   * une expiration récente) ; on ne déconnecte que si le serveur répond
-   * explicitement 401/403, ou si le jeton est illisible/périmé hors tolérance.
-   * Un échec réseau ne déconnecte jamais.
+   * une expiration dans sa fenêtre de grâce) ; on ne déconnecte que si le
+   * serveur refuse explicitement, ou si le jeton est illisible/périmé au-delà
+   * de toute grâce. Un échec réseau ne déconnecte jamais.
    */
   const ensureFreshToken = useCallback(async (): Promise<string | null> => {
     let current = tokenRef.current;
@@ -185,8 +265,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch { /* stockage indisponible : on tente l'état courant */ }
     if (!current) return null;
 
-    // Jeton illisible ou expiré au-delà de toute tolérance d'horloge :
-    // inutile de solliciter le serveur, la session est réellement finie.
+    // Jeton illisible ou expiré au-delà de toute grâce serveur : inutile de
+    // solliciter le serveur, la session est réellement finie.
     if (isTokenUnusable(current)) {
       await sessionExpired('Votre session a expiré. Reconnectez-vous — vos modifications en attente restent conservées.');
       return null;
@@ -196,29 +276,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Hors ligne : on garde la session en l'état — elle sera renouvelée au
       // retour du réseau. Surtout pas de déconnexion.
       if (!onlineRef.current) return current;
-      try {
-        const renewed = await apiRefreshToken(current);
-        await persistSession(renewed.token, {
-          id: renewed.user.id,
-          username: renewed.user.username,
-          fullName: renewed.user.fullName,
-          role: renewed.user.role as User['role'],
-        }, renewed.expiresAt);
-        return renewed.token;
-      } catch (e) {
-        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-          // Refus explicite du serveur : compte désactivé/supprimé, secret
-          // changé, ou expiration hors fenêtre de tolérance.
-          await sessionExpired();
-          return null;
-        }
-        // Réseau indisponible, serveur en veille (hébergement gratuit), 5xx… :
-        // le jeton reste utilisable ; on retentera au prochain cycle.
-        return current;
+      const outcome = await renewSession();
+      if (outcome.status === 'renewed') return outcome.token;
+      if (outcome.status === 'refused') {
+        // Refus explicite du serveur : compte désactivé/supprimé, secret
+        // changé, ou expiration hors fenêtre de tolérance.
+        await sessionExpired();
+        return null;
       }
+      // Réseau indisponible, serveur en veille (hébergement gratuit), 5xx… :
+      // le jeton reste utilisable ; on retentera au prochain cycle.
+      return current;
     }
     return current;
-  }, [sessionExpired, persistSession]);
+  }, [sessionExpired, renewSession]);
 
   /**
    * Re-tente le téléversement de la sauvegarde restée en attente après un
@@ -231,36 +302,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!fresh) return false;
     try {
       const spec = localBackupSpec();
-      await uploadLocalBackup(fresh, spec.fileName);
+      await uploadLocalBackup(fresh, spec.fileName, sessionKeeper);
       Alert.alert('Sauvegarde envoyée', `Votre sauvegarde en attente a été téléversée sur le serveur : ${spec.fileName}`);
       return true;
     } catch {
       return false; // reste en attente — re-tentative à la prochaine reconnexion
     }
-  }, [ensureFreshToken]);
+  }, [ensureFreshToken, sessionKeeper]);
 
   /**
-   * Force un renouvellement de session auprès du serveur, quelle que soit
-   * l'échéance locale du jeton. Renvoie le nouveau jeton, ou null si le serveur
-   * refuse (401/403) ou s'il est injoignable. Ne déconnecte jamais par
-   * elle-même : l'appelant décide de la suite.
+   * Planifie un cycle de synchronisation (débouncé). Passe par `doSyncRef`
+   * pour rester stable : `doSync` peut ainsi planifier sa propre relance
+   * sans dépendance circulaire.
    */
-  const renewSession = useCallback(async (): Promise<string | null> => {
-    const current = tokenRef.current || (await secureGet(TOKEN_KEY).catch(() => null));
-    if (!current || !onlineRef.current) return null;
-    try {
-      const renewed = await apiRefreshToken(current);
-      await persistSession(renewed.token, {
-        id: renewed.user.id,
-        username: renewed.user.username,
-        fullName: renewed.user.fullName,
-        role: renewed.user.role as User['role'],
-      }, renewed.expiresAt);
-      return renewed.token;
-    } catch {
-      return null;
-    }
-  }, [persistSession]);
+  const scheduleSync = useCallback((delayMs = 800) => {
+    if (!tokenRef.current || !onlineRef.current || syncingRef.current) return;
+    if (syncTimer.current) clearTimeout(syncTimer.current);
+    syncTimer.current = setTimeout(() => {
+      syncTimer.current = null;
+      void doSyncRef.current();
+    }, delayMs);
+  }, []);
 
   // ---- cycle de synchronisation ----
   const doSync = useCallback(async () => {
@@ -273,39 +335,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     syncingRef.current = true;
     setSync((s) => ({ ...s, syncing: true, lastError: null }));
-    const outcome = await runSyncCycle(freshToken, deviceIdRef.current);
+    // La session est MAINTENUE pendant la transmission : le moteur renouvelle
+    // le jeton entre deux lots/pages (proactif) et rejoue une fois la requête
+    // en 401 avec un jeton frais (réactif). Un cycle long ne déconnecte jamais.
+    const outcome = await runSyncCycle(freshToken, deviceIdRef.current, sessionKeeper);
     syncingRef.current = false;
     if (outcome.pushed > 0 || outcome.pulled > 0) setDataVersion((v) => v + 1);
     setSync({ ...readSyncStatus(), syncing: false });
     if (outcome.authRequired) {
-      // 401/403 en pleine transmission (le jeton a pu expirer entre la
-      // vérification et l'envoi, ou le serveur a redémarré). La file locale est
-      // intacte : avant toute déconnexion, on tente UN renouvellement de
-      // session et on rejoue le cycle. L'utilisateur n'est renvoyé vers l'écran
-      // de connexion que si le serveur refuse explicitement ce renouvellement.
-      const renewed = await renewSession();
-      if (renewed) {
-        clearAuthSuspension();
-        const retry = await runSyncCycle(renewed, deviceIdRef.current);
-        if (retry.pushed > 0 || retry.pulled > 0) setDataVersion((v) => v + 1);
-        setSync({ ...readSyncStatus(), syncing: false });
-        if (!retry.authRequired) return;
+      // L'échec d'auth a persisté MALGRÉ le maintien de session du cycle.
+      if (outcome.authRefused) {
+        // Refus EXPLICITE du serveur (compte désactivé/supprimé, secret
+        // changé, grâce dépassée) : vraie fin de session. La file locale est
+        // intacte et repartira dès la reconnexion (jeton valide réinjecté).
+        await sessionExpired('Votre session a expiré pendant la synchronisation. Reconnectez-vous — vos modifications en attente restent conservées sur cet appareil.');
+        return;
       }
-      await sessionExpired('Votre session a expiré pendant la synchronisation. Reconnectez-vous — vos modifications en attente restent conservées sur cet appareil.');
+      // Échec TRANSITOIRE (réseau tombé en cours de cycle, serveur en veille,
+      // 5xx…) : on GARDE la session — l'utilisateur reste connecté, la file
+      // reste suspendue avec son message explicite, et la transmission
+      // reprendra automatiquement (relance planifiée + reconnexion + retour au
+      // premier plan + prochaine écriture). Surtout pas de déconnexion.
+      scheduleSync(30000);
       return;
     }
     if (outcome.error && outcome.pushed === 0 && outcome.pulled === 0) {
       setSync((s) => ({ ...s, lastError: outcome.error || null }));
     }
-  }, [ensureFreshToken, sessionExpired, renewSession]);
+  }, [ensureFreshToken, sessionExpired, sessionKeeper, scheduleSync]);
 
-  const scheduleSync = useCallback((delayMs = 800) => {
-    if (!tokenRef.current || !onlineRef.current || syncingRef.current) return;
-    if (syncTimer.current) clearTimeout(syncTimer.current);
-    syncTimer.current = setTimeout(() => {
-      syncTimer.current = null;
-      void doSync();
-    }, delayMs);
+  // Publie le cycle courant pour la planification différée.
+  useEffect(() => {
+    doSyncRef.current = doSync;
   }, [doSync]);
 
   // ---- déclencheurs automatiques ----
@@ -369,22 +430,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateProfile = useCallback(async (fullName: string, password?: string) => {
     const fresh = await ensureFreshToken();
     if (!fresh || !userRef.current) throw new ApiError(401, 'Session expirée — reconnectez-vous.');
-    try {
-      // Endpoint auto-service `PATCH /api/users/profile` : accessible à tout
-      // utilisateur authentifié pour SON profil (nom affiché, mot de passe).
-      const res = await apiUpdateMyProfile(fresh, { fullName, ...(password ? { password } : {}) });
+    const applyProfile = async (res: { user: { fullName: string } }) => {
+      if (!userRef.current) return;
       const next: User = { ...userRef.current, fullName: res.user.fullName };
       await secureSet(USER_KEY, JSON.stringify(next));
       userRef.current = next;
       setUser(next);
+    };
+    try {
+      // Endpoint auto-service `PATCH /api/users/profile` : accessible à tout
+      // utilisateur authentifié pour SON profil (nom affiché, mot de passe).
+      const res = await apiUpdateMyProfile(fresh, { fullName, ...(password ? { password } : {}) });
+      await applyProfile(res);
     } catch (e) {
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        await sessionExpired();
-        throw new ApiError(e.status, 'Session expirée — reconnectez-vous puis réessayez.');
+      if (e instanceof ApiError && e.status === 401) {
+        // Le jeton a pu expirer entre la vérification et l'envoi : UN
+        // renouvellement puis on rejoue la requête avant toute déconnexion.
+        const healed = await renewSession();
+        if (healed.status === 'renewed') {
+          const res = await apiUpdateMyProfile(healed.token, { fullName, ...(password ? { password } : {}) });
+          await applyProfile(res);
+          return;
+        }
+        if (healed.status === 'refused') {
+          await sessionExpired();
+          throw new ApiError(e.status, 'Session expirée — reconnectez-vous puis réessayez.');
+        }
+        // Panne transitoire : on garde la session, l'utilisateur réessayera.
+        throw new ApiError(e.status, 'Session à renouveler — vérifiez la connexion puis réessayez.');
       }
+      // 403 = accès refusé malgré un jeton valide : la session, elle, est
+      // saine — on ne déconnecte pas pour un problème d'autorisation.
       throw e;
     }
-  }, [ensureFreshToken, sessionExpired]);
+  }, [ensureFreshToken, sessionExpired, renewSession]);
 
   /** Déconnexion volontaire : le SEUL cas où la session est fermée côté client. */
   const doLogout = useCallback(async () => {
@@ -456,12 +535,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (keepServer) {
       resolveConflictKeepServer(queueId);
     } else {
-      if (!tokenRef.current || !onlineRef.current) throw new ApiError(0, 'Connexion requise pour forcer.');
-      await resolveConflictForceMine(tokenRef.current, deviceIdRef.current, queueId, user as User);
+      if (!onlineRef.current) throw new ApiError(0, 'Connexion requise pour forcer.');
+      // Jeton frais (renouvelé au besoin) + maintien pendant l'envoi forcé :
+      // une session qui expire entre deux écrans ne fait plus échouer le force.
+      const fresh = await ensureFreshToken();
+      if (!fresh) throw new ApiError(401, 'Session expirée — reconnectez-vous.');
+      await resolveConflictForceMine(fresh, deviceIdRef.current, queueId, user as User, sessionKeeper);
     }
     refresh();
     setSync(readSyncStatus());
-  }, [refresh, user]);
+  }, [refresh, user, ensureFreshToken, sessionKeeper]);
 
   const retryFailed = useCallback((queueId: number) => {
     retryFailedOperation(queueId);
@@ -511,16 +594,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!fresh) throw new ApiError(401, 'Session expirée — reconnectez-vous : la sauvegarde sera re-téléversée automatiquement après.');
     try {
       const spec = localBackupSpec();
-      return await uploadLocalBackup(fresh, spec.fileName);
+      return await uploadLocalBackup(fresh, spec.fileName, sessionKeeper);
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
         // Le drapeau `pending_backup_upload` est posé par uploadLocalBackup :
-        // la sauvegarde repartira dès la reconnexion (jeton valide réinjecté).
-        throw new ApiError(e.status, 'Session expirée — reconnectez-vous : la sauvegarde sera re-téléversée automatiquement après.');
+        // la sauvegarde repartira dès le renouvellement ou la reconnexion
+        // (jeton valide réinjecté) — la session, elle, est gardée.
+        throw new ApiError(e.status, 'Session à renouveler — la sauvegarde sera re-téléversée automatiquement.');
       }
       throw e;
     }
-  }, [ensureFreshToken]);
+  }, [ensureFreshToken, sessionKeeper]);
 
   const value = useMemo<AppContextValue>(() => ({
     user, token, online, authNotice,
