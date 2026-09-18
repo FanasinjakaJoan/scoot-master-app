@@ -28,12 +28,34 @@ Réseau privé Render (gratuit, interne) :
   scoot-master-web ──http://scoot-master-api:10000──► scoot-master-api
 ```
 
-**Pourquoi 2 services web et pas 1 ?**
+### Choix : Web Service (type: web) — pas Private Service
+
+> **Décision d'architecture : on choisit 2 Web Services.**
+
+| Critère | Web Service (`type: web`) ✅ choix retenu | Private Service (`type: pserv`) ❌ non retenu |
+|---|---|---|
+| **URL publique** | Oui, `https://*.onrender.com` + domaine custom + certificat auto | Non, uniquement réseau privé |
+| **App mobile native (Expo Go)** | Fonctionne : appelle directement `https://scoot-master-api.onrender.com` | Ne fonctionne pas : API non joignable depuis l'extérieur |
+| **App web navigateur** | Fonctionne : `https://scoot-master-web.onrender.com` | Fonctionne aussi, mais doit être web |
+| **Réseau privé** | Oui, joignable aussi en privé via `scoot-master-api:10000` (hostport) | Oui, uniquement privé |
+| **Tests curl/Postman** | Oui, public | Non, besoin d'un bastion |
+| **Cas d'usage** | Prod complète (web + mobile natif) | Seulement si API 100% interne derrière le web |
+
+**Pourquoi Web Service pour l'API ?**
+- L'app mobile native ne passe PAS par le proxy web (`deploy/web-server.js`). Elle a besoin de l'URL publique de l'API (config `EXPO_PUBLIC_API_URL`).
+- Les exports, sauvegardes, monitoring, et tests API doivent être accessibles sans passer par le web.
+- On garde quand même le bénéfice du réseau privé : le web appelle l'API en `scoot-master-api:10000` (hostport) → latence <2ms, gratuit, pas de CORS.
+
+**Pourquoi Web Service pour le Web ?**
+- Doit être public pour les utilisateurs finaux (PC + mobile navigateur).
+- Stateless, peut scaler horizontalement (`numInstances: 2`).
+
+**Si on avait choisi Private Service pour l'API**, on aurait perdu l'app mobile native. Ce serait pertinent uniquement si on voulait que tout le trafic passe par le web (architecture proxy-only).
+
+**Pourquoi 2 services et pas 1 ?**
 - Séparation des responsabilités : l'API peut scaler indépendamment.
 - Persistance : seul l'API a besoin d'un disque (SQLite). Le web est stateless.
 - Sécurité : l'API reste accessible publiquement pour les apps mobiles natives (Expo Go), mais le web passe par le réseau privé pour éviter le CORS et la latence publique.
-
-> Alternative : vous pourriez mettre l'API en `type: pserv` (private service) si vous ne voulez **que** l'app web. Ici on garde `web` pour que les clients mobiles natifs puissent aussi joindre l'API directement.
 
 ---
 

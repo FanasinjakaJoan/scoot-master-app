@@ -172,13 +172,15 @@ docker compose up -d --build
 # → API     : http://localhost:4000   (admin / admin123)
 ```
 
-### Render (Blueprint, 3 clics)
+### Render (Blueprint, 3 clics) — Choix Web Service
 
 ```bash
-# render.yaml à la racine déclare 2 services + disque persistant
+# render.yaml déclare 2 Web Services (type: web) + disque persistant
+# Choix : Web Service et pas Private Service pour que l'API soit publique
+# (mobile natif Expo Go a besoin de https://scoot-master-api.onrender.com)
 # Dashboard Render → New + → Blueprint → sélectionnez le dépôt → Apply
-# → API : https://scoot-master-api.onrender.com
-# → Web : https://scoot-master-web.onrender.com
+# → API : https://scoot-master-api.onrender.com (Web Service, disque 1GB)
+# → Web : https://scoot-master-web.onrender.com (Web Service, proxy /api → API en privé)
 ```
 
 - **CI** (`.github/workflows/ci.yml`) : tests backend, smoke test API,
@@ -186,7 +188,8 @@ docker compose up -d --build
 - **CD** (`.github/workflows/deploy.yml`) : publication automatique des
   images `scoot-master-api` et `scoot-master-web` sur GitHub Container
   Registry à chaque merge sur `main`.
-- **Render** : Blueprint `render.yaml` (API + Web + disque, réseau privé `fromService: hostport`, healthchecks, `JWT_SECRET` auto-généré)
+- **Render** : Blueprint `render.yaml` avec **2 Web Services** (`type: web` — choix explicite), réseau privé `fromService: hostport` (`scoot-master-api:10000`), healthchecks, disque persistant, `JWT_SECRET` auto-généré
+  - Pourquoi pas `pserv` (private) ? Un private n'a pas d'URL publique → l'app mobile native ne pourrait pas joindre l'API. Web Service = public + privé à la fois.
 
 Détails complets :
 - 📖 Local & GHCR : [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)

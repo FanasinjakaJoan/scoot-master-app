@@ -139,13 +139,20 @@ Ces commandes sont exactement celles exécutées par la CI.
 
 Render est la cible d'hébergement recommandée pour une démo publique ou une petite production (PME).
 
-### 5.1 Architecture Render
+### 5.1 Architecture Render — Choix Web Service
 
-- `scoot-master-api` : API Express + SQLite sur disque persistant 1 GB (`/app/data/scoot.db`), healthcheck `/api/health`
-- `scoot-master-web` : App web Expo (build statique) + proxy `/api` → API via réseau privé (`fromService: hostport`)
+**Choix : 2 Web Services (`type: web`), pas Private Service.**
+
+- `scoot-master-api` : **Web Service** Docker + disque persistant 1 GB (`/app/data/scoot.db`), healthcheck `/api/health`
+  - Doit être public pour l'app mobile native Expo Go (qui appelle l'API directement)
+  - Joignable aussi en privé par le web via `fromService: hostport` → `scoot-master-api:10000`
+- `scoot-master-web` : **Web Service** Docker (build Expo web statique) + proxy `/api` → API via réseau privé
+  - Public pour navigateurs PC/mobile, stateless, scalable
+
+> Pourquoi pas Private Service (`pserv`) ? Un `pserv` n'a pas d'URL publique : l'app mobile native ne pourrait plus joindre l'API. On le choisirait uniquement si on voulait que tout passe par le proxy web. Notre choix Web Service permet web + mobile natif + tests directs.
+
 - Build web avec `EXPO_PUBLIC_API_URL=""` → chemins relatifs, pas de CORS
-
-Fichier d'infrastructure : `render.yaml` à la racine.
+- Fichier d'infrastructure : `render.yaml` à la racine, avec `type: web` explicite + commentaires choix.
 
 ### 5.2 Déploiement en 3 clics
 
