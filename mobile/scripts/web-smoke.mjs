@@ -9,7 +9,7 @@
  * au chargement d'un module (moteur SQLite web, composant, navigation) fait
  * échouer ce test.
  *
- *   node scripts/web-smoke.mjs [url] [--expect texte] [--login u p] [--write] [--wait ms]
+ *   node scripts/web-smoke.mjs [url] [--expect texte] [--login u p] [--write] [--stale-session] [--wait ms]
  *
  *   --expect <texte>   contenu attendu dans #root (défaut : « Scoot Master »)
  *   --login <u> <p>    se connecte via /api/auth/login (proxy du serveur web),
@@ -18,6 +18,12 @@
  *                      des données de démo dans la base locale) + rendu écrans
  *   --write            ajoute une moto via le formulaire du catalogue (écriture
  *                      base locale + file de synchronisation) — à utiliser avec --login
+ *   --stale-session    injecte une session dont le jeton est REFUSÉ par le
+ *                      serveur (secret changé, base réinitialisée, compte
+ *                      supprimé) : en mode session permanente, la session
+ *                      RESTE active localement (pas de déconnexion auto),
+ *                      les données locales restent intactes, la synchro
+ *                      traite 401 comme interruption temporaire et re-tente.
  *   --wait <ms>        budget d'attente (défaut 8000, 25000 avec --login)
  *
  * Sortie : 0 = OK, 1 = échec.
@@ -43,9 +49,21 @@ mark('--expect', 1);
 mark('--login', 2);
 mark('--wait', 1);
 mark('--write', 0);
+mark('--stale-session', 0);
 const url = argv.find((a, i) => !consumed.has(i) && !a.startsWith('--')) || 'http://127.0.0.1:8080/';
 const login = takesTwo('--login');
 const write = argv.includes('--write');
+/**
+ * Mode « session périmée » : une session est injectée dans le stockage avec un
+ * jeton que le serveur REFUSE (signature invalide).
+ *
+ * Nouvelle stratégie « session permanente » : même si le serveur refuse le
+ * jeton (401), l'utilisateur RESTE connecté localement — aucune déconnexion
+ * automatique. Les données locales et la file de synchro sont conservées,
+ * la synchro planifie une re-tentative. Seul le bouton « Se déconnecter »
+ * peut fermer la session.
+ */
+const staleSession = argv.includes('--stale-session');
 const expectFlag = flagValue('--expect');
 // Écran attendu :
 //  - sans --login : l'écran de CONNEXION (et non l'écran de démarrage « Scoot
@@ -53,9 +71,9 @@ const expectFlag = flagValue('--expect');
 //    formulaire, pour éviter un faux positif tant que la base locale s'initialise) ;
 //  - avec --login : l'accueil et ses statistiques (donc la base locale remplie
 //    par le pull de synchronisation).
-const expect = expectFlag ?? (login ? 'Motos disponibles' : 'Se connecter');
+const expect = expectFlag ?? (staleSession ? 'Bonjour,' : login ? 'Motos disponibles' : 'Se connecter');
 
-const waitMs = Number(flagValue('--wait') ?? (login ? 25000 : 8000));
+const waitMs = Number(flagValue('--wait') ?? (login ? 25000 : staleSession ? 15000 : 8000));
 const origin = new URL(url).origin;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -80,8 +98,22 @@ if (login) {
   session = await res.json();
 }
 
+if (staleSession) {
+  // Jeton structurellement valide (3 segments, `exp` futur) mais dont la
+  // signature est refusée par le serveur : SEUL le serveur peut trancher, ce
+  // qui est précisément le comportement à vérifier.
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  session = {
+    token: `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'session-perimee', username: 'admin', role: 'admin', fullName: 'Session Périmée', exp })}.signature-refusee`,
+    user: { id: 'session-perimee', username: 'admin', fullName: 'Session Périmée', role: 'admin' },
+  };
+}
+
 const errors = [];
 const logs = [];
+/** Journal des appels API de la page : `{method, path, status}`. */
+const apiCalls = [];
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', (e) => errors.push(String(e.detail ?? e.message ?? e).split('\n').slice(0, 8).join('\n')));
 for (const level of ['error', 'warn']) {
@@ -114,10 +146,20 @@ const dom = await JSDOM.fromURL(url, {
     window.URL.createObjectURL ??= () => 'blob:jsdom';
     window.alert = () => {};
     window.confirm = () => true;
-    if (!window.fetch) {
-      window.fetch = (input, init) =>
-        globalThis.fetch(typeof input === 'string' && input.startsWith('/') ? origin + input : input, init);
-    }
+    // Journalisation des appels API (méthode, chemin, statut) : les assertions
+    // sur la gestion des sessions s'appuient sur ce relevé — pas sur la console,
+    // où un 401 géré proprement reste de toute façon invisible.
+    const nativeFetch = window.fetch
+      ? window.fetch.bind(window)
+      : (input, init) => globalThis.fetch(typeof input === 'string' && input.startsWith('/') ? origin + input : input, init);
+    window.fetch = async (input, init) => {
+      const path = typeof input === 'string' ? input : (input && input.url) || '';
+      const res = await nativeFetch(input, init);
+      if (path.includes('/api/')) {
+        apiCalls.push({ method: (init && init.method) || 'GET', path: path.split('?')[0], status: res.status });
+      }
+      return res;
+    };
     if (session) {
       window.localStorage.setItem('sm_token', session.token);
       window.localStorage.setItem('sm_user', JSON.stringify(session.user));
@@ -172,6 +214,24 @@ if (login && !expectFlag) {
     failed = true;
   } else {
     console.log(`\n✓ Connexion + synchronisation OK : ${synced[1]} moto(s) disponible(s) lues depuis la base locale.`);
+  }
+}
+
+// --- session périmée : session permanente, reste connecté malgré 401 ---
+if (!failed && staleSession) {
+  const storage = dom.window.localStorage;
+  const stillLoggedIn = /Bonjour,/.test(text);
+  const tokenStillThere = Boolean(storage.getItem('sm_token') && storage.getItem('sm_user'));
+
+  if (!stillLoggedIn) {
+    console.log('\n✗ Session permanente : l’utilisateur a été déconnecté alors que le jeton est refusé par le serveur — attendu : rester connecté (déconnexion explicite uniquement).');
+    failed = true;
+  } else if (!tokenStillThere) {
+    console.log('\n✗ Session permanente : jeton supprimé du stockage alors que la déconnexion doit être explicite uniquement.');
+    failed = true;
+  } else {
+    const denied = apiCalls.filter((c) => c.status === 401 || c.status === 403);
+    console.log(`\n✓ Session permanente OK — utilisateur reste connecté malgré jeton refusé (${denied.length} 401/403 traités comme interruption temporaire), données locales conservées, déconnexion uniquement via bouton.`);
   }
 }
 

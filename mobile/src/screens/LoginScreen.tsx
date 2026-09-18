@@ -80,6 +80,15 @@ export function LoginScreen() {
           <Button title={busy ? 'Connexion…' : 'Se connecter'} onPress={submit} disabled={busy} />
         </View>
 
+        {/* Comptes de démonstration (semés au démarrage du backend) : évite les
+            connexions refusées (401 « Identifiants incorrects ») par simple
+            méconnaissance des identifiants de démo. */}
+        <View style={styles.demo}>
+          <Text style={styles.demoTitle}>Comptes de démonstration</Text>
+          <Text style={styles.demoLine}>Administrateur : <Text style={styles.demoCode}>admin</Text> / <Text style={styles.demoCode}>admin123</Text></Text>
+          <Text style={styles.demoLine}>Vendeur : <Text style={styles.demoCode}>vendeur</Text> / <Text style={styles.demoCode}>vendeur123</Text></Text>
+        </View>
+
         {/* Raccourci d'installation : APK Android ou application de bureau */}
         <InstallAppCard compact />
       </ScrollView>
@@ -104,4 +113,11 @@ const styles = StyleSheet.create({
     marginBottom: 8, backgroundColor: colors.background,
   },
   error: { color: colors.danger, fontSize: 13, marginBottom: 6 },
+  demo: {
+    backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1,
+    borderColor: colors.border, padding: 14, gap: 3,
+  },
+  demoTitle: { fontSize: 12, fontWeight: '700', color: colors.textMuted, marginBottom: 2 },
+  demoLine: { fontSize: 13, color: colors.textMuted },
+  demoCode: { color: colors.text, fontWeight: '700' },
 });

@@ -20,6 +20,10 @@ const userRoutes = require('./routes/users');
 function createApp(db) {
   const app = express();
   app.disable('x-powered-by');
+  // Base portée par l'application : le middleware d'authentification y relit le
+  // compte à chaque requête (révocation effective, rôle lu en base et non dans
+  // le jeton) sans que chaque route ait à lui transmettre `db`.
+  app.locals.db = db;
   app.use(cors({ origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(',') }));
   app.use(express.json({ limit: '5mb' }));
 
@@ -33,6 +37,8 @@ function createApp(db) {
     const eps = [
       ['GET', '/api/health', 'État du service'],
       ['POST', '/api/auth/login', 'Connexion → JWT  {username, password}'],
+      ['POST', '/api/auth/check', 'Validation session SANS 401 (toujours 200) — évite le log navigateur au chargement'],
+      ['POST', '/api/auth/refresh-safe', 'Renouvellement SANS 401 (toujours 200) — keep-alive / maintien pendant sync'],
       ['GET', '/api/auth/me', 'Profil utilisateur (auth)'],
       ['GET', '/api/bikes', 'Catalogue (filtres: status, brand, q, minPrice, maxPrice, sort, order) (auth)'],
       ['GET', '/api/bikes/meta', 'Marques & statuts (auth)'],

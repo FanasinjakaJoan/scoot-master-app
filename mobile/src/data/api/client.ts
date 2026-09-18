@@ -10,10 +10,16 @@ export class ApiError extends Error {
   status: number;
   /** true si le serveur signale une session expirée (renouvelable). */
   expired: boolean;
-  constructor(status: number, message: string, expired = false) {
+  /**
+   * true si le serveur signale un compte supprimé ou désactivé : la session est
+   * close définitivement, un renouvellement serait inutile (réauthentification).
+   */
+  revoked: boolean;
+  constructor(status: number, message: string, expired = false, revoked = false) {
     super(message);
     this.status = status;
     this.expired = expired;
+    this.revoked = revoked;
   }
 }
 
@@ -40,9 +46,9 @@ export async function apiCall<T>(
   let json: unknown;
   try { json = JSON.parse(text); } catch { json = { raw: text }; }
   if (!res.ok) {
-    const body = json as { error?: string; expired?: boolean };
+    const body = json as { error?: string; expired?: boolean; revoked?: boolean };
     const message = body?.error || `Erreur ${res.status}`;
-    throw new ApiError(res.status, message, Boolean(body?.expired));
+    throw new ApiError(res.status, message, Boolean(body?.expired), Boolean(body?.revoked));
   }
   return json as T;
 }
@@ -73,9 +79,49 @@ export async function login(username: string, password: string): Promise<Session
  * Un 401 ici signifie une vraie fin de session (compte supprimé/désactivé,
  * secret changé, expiration hors tolérance) : l'appelant demande alors une
  * réauthentification — jamais une purge des données locales.
+ *
+ * NOTE : pour éviter le log « Failed to load resource: 401 » dans la console
+ * navigateur au chargement, l'app utilise désormais `checkSession` /
+ * `refreshTokenSafe` (toujours 200) pour la validation initiale et les
+ * renouvellements en arrière-plan. `refreshToken` reste disponible pour
+ * compatibilité et pour les tests qui vérifient le 401.
  */
 export function refreshToken(token: string): Promise<SessionResponse> {
   return apiCall<SessionResponse>(token, 'POST', '/api/auth/refresh');
+}
+
+/**
+ * Réponse de vérification de session SANS 401 (toujours 200).
+ * `valid: true` → session maintenue, `valid: false` → fin de session.
+ */
+export interface CheckSessionResponse {
+  valid: boolean;
+  token?: string;
+  expiresAt?: number;
+  expiresIn?: number;
+  user?: { id: string; username: string; fullName: string; role: string };
+  error?: string;
+  revoked?: boolean;
+  expired?: boolean;
+  reason?: string;
+}
+
+/**
+ * Valide une session restaurée du stockage SANS jamais renvoyer 401.
+ * Toujours 200 : évite le bruit « Failed to load resource: 401 » dans la
+ * console du navigateur au chargement de l'app.
+ */
+export function checkSession(token: string): Promise<CheckSessionResponse> {
+  return apiCall<CheckSessionResponse>(token, 'POST', '/api/auth/check');
+}
+
+/**
+ * Renouvellement « safe » (toujours 200) pour keep-alive et retours au
+ * premier plan — même sémantique que `checkSession` mais avec un jeton frais
+ * si la session est valide.
+ */
+export function refreshTokenSafe(token: string): Promise<CheckSessionResponse> {
+  return apiCall<CheckSessionResponse>(token, 'POST', '/api/auth/refresh-safe');
 }
 
 // ---------------------------------------------------------------------

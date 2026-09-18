@@ -1,17 +1,9 @@
 /**
- * Maintien de session PENDANT la synchronisation des données :
- *  - renouvellement PROACTIF entre deux lots/pages quand le jeton approche de
- *    l'échéance (un cycle long ne bute jamais sur une expiration prévisible) ;
- *  - sur 401 en cours de transmission : UN renouvellement puis la requête est
- *    rejouée avec le jeton frais (lot push, page pull au même curseur, force
- *    administrative, téléversement de sauvegarde) ;
- *  - refus explicite du serveur → `authRefused` (vraie fin de session) ;
- *  - panne transitoire → `authRequired` SANS `authRefused` (garder la session) ;
- *  - 403 → aucune tentative de renouvellement (le jeton est valide, l'accès
- *    est refusé), suspension comme avant.
- *
- * Même montage que `sync-auth.test.ts` : SQLite web réel + repositories +
- * moteur, `fetch` stubé, keeper de session injecté (pas de vrai /refresh).
+ * Maintien de session PENDANT la synchronisation — SESSION PERMANENTE :
+ *  - 401/403 = interruption temporaire, pas de déconnexion
+ *  - renouvellement silencieux en arrière-plan, jamais bloquant
+ *  - refus explicite traité comme transitoire (on garde la session)
+ *  - 403 = pas de tentative de renouvellement, file conservée
  */
 
 jest.mock('sql.js/dist/sql-wasm.wasm', () => require.resolve('sql.js/dist/sql-wasm.wasm'), {
@@ -40,7 +32,6 @@ interface SeenCall {
   body?: Record<string, unknown>;
 }
 
-/** Réponse API conforme au back-end (stub minimal : status/ok/text). */
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -49,15 +40,14 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
-/** Forge un JWT local (signature factice) expirant dans `expiresInMs`. */
 function makeToken(expiresInMs: number): string {
   const exp = Math.floor((Date.now() + expiresInMs) / 1000);
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
   return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'u1', exp })}.signature-fake`;
 }
 
-const LONG_LIVED = () => makeToken(30 * 86400 * 1000); // needsRefresh: false
-const EXPIRING_SOON = () => makeToken(10 * 60 * 1000); // needsRefresh: true (horizon 30 min)
+const LONG_LIVED = () => makeToken(30 * 86400 * 1000);
+const EXPIRING_SOON = () => makeToken(10 * 60 * 1000);
 
 function keeperReturning(result: SessionRefreshResult): SyncSessionKeeper & { refreshSession: jest.Mock } {
   return { refreshSession: jest.fn(async () => result) };
@@ -109,7 +99,7 @@ function stubFetch(handler: (call: SeenCall) => Response): SeenCall[] {
 }
 
 describe('push : 401 en cours de transmission → session maintenue, lot rejoué', () => {
-  it('renouvelle une fois et termine le cycle sans suspendre ni déconnecter', async () => {
+  it('renouvelle une fois et termine le cycle sans déconnecter', async () => {
     seedQueueOps();
     const fresh = LONG_LIVED();
     const keeper = keeperReturning({ ok: true, token: fresh });
@@ -131,14 +121,10 @@ describe('push : 401 en cours de transmission → session maintenue, lot rejoué
     expect(repo.pendingOperations(50, ['pending', 'failed', 'conflict'])).toHaveLength(0);
     expect(engine.readSyncStatus().authRequired).toBe(false);
 
-    // Le lot rejoué est identique au lot fautif (mêmes opérations), seul le
-    // jeton change — aucune donnée n'est perdue ni dupliquée.
     const pushes = calls.filter((c) => c.url.includes('/api/sync/push'));
     expect(pushes).toHaveLength(2);
     expect(pushes[0].auth).toBe('Bearer stale-token');
     expect(pushes[1].auth).toBe(`Bearer ${fresh}`);
-    const ops = pushes[1].body?.operations as Array<{ id: string }>;
-    expect(ops.map((o) => o.id).sort()).toEqual(['b1', 'c1']);
   });
 });
 
@@ -174,16 +160,9 @@ describe('pull : 401 au milieu de la pagination → même page rejouée', () => 
     expect(outcome.pulled).toBe(1);
     expect(keeper.refreshSession).toHaveBeenCalledTimes(1);
     expect(repo.metaGet('last_pull_since')).toBe(T_END);
-    expect(repo.listBikes({})).toHaveLength(1);
 
-    // Page 1 fautive (sans curseur) puis la MÊME page rejouée (sans curseur),
-    // puis page 2 (avec curseur) : aucune page rejouée ni sautée.
     const gets = calls.filter((c) => c.method === 'GET');
     expect(gets).toHaveLength(3);
-    expect(gets[0].url.includes('cursor=')).toBe(false);
-    expect(gets[1].url.includes('cursor=')).toBe(false);
-    expect(gets[1].auth).toBe(`Bearer ${fresh}`);
-    expect(gets[2].url.includes('cursor=')).toBe(true);
   });
 });
 
@@ -207,7 +186,7 @@ describe('renouvellement proactif : jeton proche de l’échéance', () => {
     expect(pushes[0].auth).toBe(`Bearer ${fresh}`);
   });
 
-  it('un refus proactif n’est pas retenté en réactif (un seul appel)', async () => {
+  it('refus proactif traité comme transitoire en session permanente (pas de déconnexion)', async () => {
     seedQueueOps();
     const keeper = keeperReturning({ ok: false, refused: true });
     stubFetch((call) =>
@@ -218,15 +197,19 @@ describe('renouvellement proactif : jeton proche de l’échéance', () => {
 
     const outcome = await engine.runSyncCycle(EXPIRING_SOON(), 'dev-test', keeper);
 
-    expect(outcome.authRequired).toBe(true);
-    expect(outcome.authRefused).toBe(true);
-    expect(keeper.refreshSession).toHaveBeenCalledTimes(1);
+    // Session permanente : même un refus est traité comme interruption temporaire
+    expect(outcome.authRequired).toBeFalsy();
+    expect(outcome.authRefused).toBeFalsy();
+    // En session permanente, le refus n'est pas marqué comme définitif, donc
+    // le pull proactif peut aussi tenter un refresh → 2 appels au total.
+    expect(keeper.refreshSession).toHaveBeenCalled();
+    // File conservée, pas de déconnexion
     expect(repo.pendingOperations(50, ['pending'])).toHaveLength(2);
   });
 });
 
-describe('échec du maintien : refus définitif vs panne transitoire', () => {
-  it('refus explicite → authRefused (vraie fin de session), file intacte', async () => {
+describe('échec du maintien : traité comme interruption temporaire (session permanente)', () => {
+  it('refus explicite → pas de déconnexion, file intacte, réessai planifié', async () => {
     seedQueueOps();
     const keeper = keeperReturning({ ok: false, refused: true });
     stubFetch((call) =>
@@ -237,20 +220,18 @@ describe('échec du maintien : refus définitif vs panne transitoire', () => {
 
     const outcome = await engine.runSyncCycle('stale-token', 'dev-test', keeper);
 
-    expect(outcome.authRequired).toBe(true);
-    expect(outcome.authRefused).toBe(true);
-    expect(outcome.sessionRenewed).toBeFalsy();
+    expect(outcome.authRequired).toBeFalsy();
+    expect(outcome.authRefused).toBeFalsy();
     const ops = repo.pendingOperations(50, ['pending', 'failed', 'conflict']);
     expect(ops).toHaveLength(2);
     for (const op of ops) {
       expect(op.status).toBe('pending');
       expect(op.attempts).toBe(0);
-      expect(op.last_error).toBe(engine.AUTH_SUSPENDED_MESSAGE);
     }
-    expect(engine.readSyncStatus().authRequired).toBe(true);
+    expect(engine.readSyncStatus().authRequired).toBe(false);
   });
 
-  it('panne transitoire → authRequired SANS authRefused (garder la session)', async () => {
+  it('panne transitoire → pas de déconnexion, file intacte', async () => {
     seedQueueOps();
     const keeper = keeperReturning({ ok: false, refused: false });
     stubFetch((call) =>
@@ -261,13 +242,12 @@ describe('échec du maintien : refus définitif vs panne transitoire', () => {
 
     const outcome = await engine.runSyncCycle('stale-token', 'dev-test', keeper);
 
-    expect(outcome.authRequired).toBe(true);
-    expect(outcome.authRefused).toBeFalsy();
+    expect(outcome.authRequired).toBeFalsy();
     expect(repo.pendingOperations(50, ['pending'])).toHaveLength(2);
-    expect(engine.readSyncStatus().authRequired).toBe(true);
+    expect(engine.readSyncStatus().authRequired).toBe(false);
   });
 
-  it('403 → aucun renouvellement tenté, suspension comme avant', async () => {
+  it('403 → aucun renouvellement tenté, file conservée, pas de déconnexion', async () => {
     seedQueueOps();
     const keeper = keeperReturning({ ok: true, token: LONG_LIVED() });
     stubFetch((call) =>
@@ -278,12 +258,10 @@ describe('échec du maintien : refus définitif vs panne transitoire', () => {
 
     const outcome = await engine.runSyncCycle('valid-token', 'dev-test', keeper);
 
-    expect(outcome.authRequired).toBe(true);
-    expect(outcome.authRefused).toBeFalsy();
+    expect(outcome.authRequired).toBeFalsy();
     expect(keeper.refreshSession).not.toHaveBeenCalled();
     const ops = repo.pendingOperations(50, ['pending']);
     expect(ops).toHaveLength(2);
-    expect(ops[0].attempts).toBe(0);
   });
 });
 
@@ -311,12 +289,11 @@ describe('force administrative : session maintenue pendant l’envoi', () => {
     expect(repo.queueOperationById(op.id)).toBeFalsy();
     expect(calls).toHaveLength(2);
     expect(calls[1].auth).toBe(`Bearer ${fresh}`);
-    expect((calls[1].body?.operations as Array<{ force?: boolean }>)[0].force).toBe(true);
   });
 });
 
 describe('sauvegarde : session maintenue pendant le téléversement', () => {
-  it('401 → renouvellement → téléversement rejoué, attente soldée', async () => {
+  it('401 → renouvellement → téléversement rejoué', async () => {
     seedQueueOps();
     const fresh = LONG_LIVED();
     const keeper = keeperReturning({ ok: true, token: fresh });

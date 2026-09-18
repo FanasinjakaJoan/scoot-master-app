@@ -50,6 +50,70 @@ module.exports = function authRoutes(db) {
   });
 
   /**
+   * Vérifie un jeton sans jamais renvoyer 401 — toujours 200.
+   * Utilisé au chargement de l'app pour valider une session restaurée du
+   * stockage sans provoquer « Failed to load resource: 401 » dans la console
+   * du navigateur. Un jeton invalide/révoqué/expiré hors grâce renvoie
+   * `{ valid: false, ... }` (pas de 401), ce qui permet au client de se
+   * déconnecter silencieusement sans log d'erreur réseau.
+   */
+  function verifyTokenForCheck(rawToken) {
+    if (!rawToken) {
+      return { valid: false, error: 'Authentification requise.', reason: 'missing' };
+    }
+    let payload;
+    try {
+      payload = jwt.verify(rawToken, config.jwtSecret);
+    } catch (e) {
+      if (!e || e.name !== 'TokenExpiredError') {
+        return { valid: false, error: 'Jeton invalide.', reason: 'invalid' };
+      }
+      try {
+        payload = jwt.verify(rawToken, config.jwtSecret, { ignoreExpiration: true });
+      } catch {
+        return { valid: false, error: 'Jeton invalide.', reason: 'invalid' };
+      }
+      const expiredSince = Math.floor(Date.now() / 1000) - Number(payload.exp || 0);
+      if (expiredSince > config.jwtRefreshGraceSeconds) {
+        return { valid: false, error: 'Session expirée depuis trop longtemps — reconnectez-vous.', reason: 'expired', expired: true };
+      }
+    }
+    const row = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(payload.sub);
+    if (!row) {
+      return { valid: false, error: 'Compte supprimé ou désactivé — reconnexion requise.', reason: 'revoked', revoked: true };
+    }
+    return { valid: true, payload, userRow: row };
+  }
+
+  /**
+   * POST /api/auth/check — validation de session SANS 401.
+   * Toujours 200 : `{ valid: true, token, user, expiresAt }` ou
+   * `{ valid: false, error, revoked?, expired?, reason }`.
+   * Le client l'appelle au chargement pour vérifier une session restaurée
+   * sans déclencher d'erreur réseau visible dans la console.
+   */
+  r.post('/check', (req, res) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : (req.body && req.body.token) || null;
+    const result = verifyTokenForCheck(token);
+    if (!result.valid) {
+      return res.json({ valid: false, error: result.error, revoked: result.revoked || false, expired: result.expired || false, reason: result.reason });
+    }
+    res.json({ valid: true, ...sessionPayload(result.userRow) });
+  });
+
+  // Alias GET pour compatibilité éventuelle (même sémantique, 200 toujours).
+  r.get('/check', (req, res) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+    const result = verifyTokenForCheck(token);
+    if (!result.valid) {
+      return res.json({ valid: false, error: result.error, revoked: result.revoked || false, expired: result.expired || false, reason: result.reason });
+    }
+    res.json({ valid: true, ...sessionPayload(result.userRow) });
+  });
+
+  /**
    * POST /api/auth/refresh — renouvelle le jeton (glissement de session).
    *
    * La session reste ouverte tant que l'utilisateur ne se déconnecte pas
@@ -60,11 +124,32 @@ module.exports = function authRoutes(db) {
    *
    * Le compte est re-vérifié en base à chaque renouvellement : suppression ou
    * désactivation ⇒ 401 immédiat (révocation effective).
+   *
+   * NOTE : pour le chargement initial de l'app, préférer POST /api/auth/check
+   * qui ne renvoie jamais 401 et évite le log « Failed to load resource: 401 »
+   * dans la console navigateur.
    */
   r.post('/refresh', requireAuthAllowExpired, (req, res) => {
     const u = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(req.user.id);
-    if (!u) return res.status(401).json({ error: 'Compte introuvable ou désactivé — reconnexion requise.' });
+    if (!u) return res.status(401).json({ error: 'Compte introuvable ou désactivé — reconnexion requise.', revoked: true });
     res.json(sessionPayload(u));
+  });
+
+  /**
+   * POST /api/auth/refresh-safe — même logique que /refresh mais TOUJOURS 200.
+   * Variante sans 401 pour les renouvellements en arrière-plan (keep-alive,
+   * retour au premier plan) : évite le bruit console tout en gardant la
+   * compatibilité de /refresh (qui reste 401 pour les clients existants).
+   * Réponse : `{ valid: true, token, user, ... }` ou `{ valid: false, ... }`.
+   */
+  r.post('/refresh-safe', (req, res) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+    const result = verifyTokenForCheck(token);
+    if (!result.valid) {
+      return res.json({ valid: false, error: result.error, revoked: result.revoked || false, expired: result.expired || false, reason: result.reason });
+    }
+    res.json({ valid: true, ...sessionPayload(result.userRow) });
   });
 
   return r;

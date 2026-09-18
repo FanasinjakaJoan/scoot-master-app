@@ -184,11 +184,11 @@ npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, o
 
 | Couche | Commande | Contenu |
 |---|---|---|
-| Backend | `cd backend && npm test` | 43 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro** |
-| API réelle | `cd backend && npm run check:api` | 36 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
+| Backend | `cd backend && npm test` | 47 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro**, **révocation effective sur toutes les routes protégées** (compte supprimé/désactivé → 401, rôle lu en base) |
+| API réelle | `cd backend && npm run check:api` | 48 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
 | Mobile | `cd mobile && npm test` | 74 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde) |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
-| Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés |
+| Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés ; avec `-- --stale-session`, une session dont le jeton est refusé par le serveur est validée via `POST /api/auth/check` (**toujours 200, ZÉRO 401**) puis retour à l'écran de connexion, aucun appel métier |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
 
 ## 🐳 Docker & Hébergement
@@ -313,11 +313,41 @@ Résumé (détail : [docs/SYNC.md](docs/SYNC.md)) :
 - Authentification JWT (30 jours, renouvellement glissant via `POST /api/auth/refresh`,
   grâce de 60 jours pour les appareils restés hors ligne), mots de passe hachés (bcrypt).
   La session est **maintenue pendant la synchronisation** : renouvellement proactif entre
-  deux lots/pages et rejeu transparent de la requête en 401 — l'utilisateur n'est
-  renvoyé vers la connexion que si le serveur refuse explicitement la session.
+  deux lots/pages (via `POST /api/auth/refresh-safe`, toujours 200) et rejeu transparent
+  de la requête en 401 — l'utilisateur n'est renvoyé vers la connexion que si le serveur
+  refuse explicitement la session.
+- Une session **restaurée au démarrage** (jeton conservé d'une exécution précédente) est
+  validée par `POST /api/auth/check` (**toujours 200, jamais 401**) avant tout appel
+  métier : un jeton devenu inutilisable produit **zéro 401 dans la console** puis
+  l'écran de connexion — pas de requête de données envoyée pour rien, pas d'accueil
+  affiché pour une session morte. C'est l'approche qui élimine le log
+  « Failed to load resource: 401 » au chargement de l'app.
+- **Révocation effective** : le compte est relu en base à chaque requête protégée. Un
+  compte supprimé ou désactivé perd l'accès immédiatement (401 `revoked: true` sur les
+  routes métier, ou `{ valid:false, revoked:true }` en 200 sur `/check`/`refresh-safe`),
+  et le rôle autorisé est celui de la base — pas celui revendiqué dans le jeton.
 - Rôles : `admin` (suppressions, validation de conflits, sauvegardes serveur) et
   `seller` (catalogue, ventes, clients).
 - En production : changer `JWT_SECRET`, activer HTTPS, restreindre `CORS_ORIGIN`.
+
+### Comprendre un `401` dans la console du navigateur
+
+`Failed to load resource: the server responded with a status of 401` est le signal par
+lequel le serveur indique « cette session n'est pas (ou plus) acceptée ». Depuis la
+nouvelle approche, **aucun 401 n'est émis au chargement de l'app**, même pour une
+session périmée :
+
+| Origine | Ce que fait l'app (nouvelle approche) |
+|---|---|
+| `POST /api/auth/login` — identifiants erronés | Message « Identifiants incorrects. » ; les comptes de démo (`admin / admin123`, `vendeur / vendeur123`) sont rappelés sous le formulaire — 401 attendu, normal |
+| Jeton expiré mais dans la grâce (60 j) | Renouvellement transparent via `POST /api/auth/refresh-safe` (**200**, pas 401) puis rejeu : **aucune déconnexion**, zéro 401 console |
+| Jeton refusé (secret `JWT_SECRET` changé, base réinitialisée, compte supprimé/désactivé) | Validation via `POST /api/auth/check` → `{ valid:false }` en **200**, **zéro 401**, puis écran de connexion — **données locales et file de synchronisation conservées**, la transmission reprend à la reconnexion |
+| Routes métier sans jeton (`/api/bikes`, `/api/sync/*`) | 401 normal si appel sans session — mais l'app ne les appelle plus avec un jeton invalide grâce à la validation préalable en 200 |
+
+Un 401 **répété** en boucle n'est donc plus attendu au chargement : s'il apparaît, cela
+signifie que le client appelle encore une route protégée avec un jeton invalide (ancienne
+version du code) ou que le backend visé a changé de `JWT_SECRET`/base — se reconnecter
+suffit, et la nouvelle validation en 200 évite le bruit console.
 
 ## 📄 Licence
 
