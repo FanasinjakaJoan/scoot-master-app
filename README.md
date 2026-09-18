@@ -73,13 +73,14 @@ avec résolution de conflits et exports JSON/CSV.
 ```
 scoot-master-app/
 ├── README.md                  ← ce fichier
-├── render.yaml                ← Blueprint Render : API + Web + disque persistant (1 commande cloud)
+├── render.yaml                ← Blueprint Render : 2 Web Services + disque (1 commande cloud)
 ├── docker-compose.yml         ← pile complète locale : API + app web (1 commande)
-├── .github/workflows/         ← CI (tests, typecheck, build Docker) + CD (GHCR)
+├── .github/workflows/         ← CI + CD GHCR + Build APK Android (Gradle)
 ├── deploy/web-server.js       ← serveur web statique + proxy /api (zéro dépendance)
 ├── docs/
-│   ├── RENDER.md              ← déploiement & hébergement sur Render (guide complet)
-│   ├── DEPLOYMENT.md          ← conteneurisation, CI/CD, Render, tester sur PC/mobile
+│   ├── RENDER.md              ← déploiement & hébergement Render (Web Service, guide complet)
+│   ├── APK.md                 ← build APK Android (GitHub Actions, local Gradle, EAS)
+│   ├── DEPLOYMENT.md          ← conteneurisation, CI/CD, Render, tester PC/mobile
 │   ├── INSTALLATION.md        ← installation pas à pas (backend + mobile)
 │   ├── DATABASE_SCHEMA.md     ← schéma local & cloud, dictionnaire de données
 │   ├── SYNC.md                ← logique de synchronisation offline-first
@@ -191,9 +192,36 @@ docker compose up -d --build
 - **Render** : Blueprint `render.yaml` avec **2 Web Services** (`type: web` — choix explicite), réseau privé `fromService: hostport` (`scoot-master-api:10000`), healthchecks, disque persistant, `JWT_SECRET` auto-généré
   - Pourquoi pas `pserv` (private) ? Un private n'a pas d'URL publique → l'app mobile native ne pourrait pas joindre l'API. Web Service = public + privé à la fois.
 
+### 📱 APK Android
+
+APK Release prêt à installer (package `mg.scootmaster.app`) :
+
+```bash
+# Méthode GitHub Actions (recommandée, sans SDK local)
+# Workflow .github/workflows/apk.yml build l'APK sur ubuntu-latest (Java 17 + Android SDK)
+# → https://github.com/FanasinjakaJoan/scoot-master-app/actions/workflows/apk.yml
+# Dernière build réussie : https://github.com/FanasinjakaJoan/scoot-master-app/actions/runs/35311464935
+# Artifact : scoot-master-apk (112 MB, 2 APKs) — téléchargeable dans l'UI web
+
+# Méthode locale (nécessite Android Studio)
+cd mobile
+./build-apk.sh
+# → mobile/scoot-master-latest.apk
+adb install mobile/scoot-master-latest.apk
+
+# Méthode EAS Cloud
+cd mobile
+eas build --platform android --profile preview
+```
+
+- Config : `mobile/eas.json` (preview/production/local, buildType apk, API URL Render)
+- Script : `mobile/build-apk.sh` (npm ci + expo prebuild + gradlew assembleRelease)
+- Guide complet : 📖 [`docs/APK.md`](docs/APK.md)
+
 Détails complets :
 - 📖 Local & GHCR : [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
-- 🚀 Render (guide complet, 11 sections) : [`docs/RENDER.md`](docs/RENDER.md)
+- 🚀 Render (Web Service, 11 sections) : [`docs/RENDER.md`](docs/RENDER.md)
+- 📱 APK (4 méthodes) : [`docs/APK.md`](docs/APK.md)
 
 ## ️ Base de données
 
