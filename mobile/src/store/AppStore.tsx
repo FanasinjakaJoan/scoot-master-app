@@ -6,7 +6,7 @@ import { useNetworkState } from 'expo-network';
 
 import { secureGet, secureSet, secureDelete } from '../lib/secureStorage';
 
-import { login as apiLogin, ApiError } from '../data/api/client';
+import { login as apiLogin, updateUser as apiUpdateUser, ApiError } from '../data/api/client';
 import * as repo from '../data/local/repositories';
 import {
   runSyncCycle, readSyncStatus, resolveConflictKeepServer, resolveConflictForceMine,
@@ -33,6 +33,7 @@ interface AppContextValue {
   online: boolean;
   doLogin: (username: string, password: string) => Promise<void>;
   doLogout: () => Promise<void>;
+  updateProfile: (fullName: string, password?: string) => Promise<void>;
   // sync
   sync: SyncStatus;
   scheduleSync: (delayMs?: number) => void;
@@ -150,6 +151,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSync(readSyncStatus());
     scheduleSync(500);
   }, [scheduleSync]);
+
+  const updateProfile = useCallback(async (fullName: string, password?: string) => {
+    if (!tokenRef.current || !user) throw new ApiError(401, 'Session expirée.');
+    await apiUpdateUser(tokenRef.current, user.id, { fullName, ...(password ? { password } : {}) });
+    const next = { ...user, fullName };
+    await secureSet(USER_KEY, JSON.stringify(next));
+    setUser(next);
+  }, [user]);
 
   const doLogout = useCallback(async () => {
     await secureDelete(TOKEN_KEY);
@@ -273,7 +282,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppContextValue>(() => ({
     user, token, online,
-    doLogin, doLogout,
+    doLogin, doLogout, updateProfile,
     sync, scheduleSync,
     resolveConflict, retryFailed,
     saveBike, patchBike, deleteBike,
@@ -281,7 +290,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveSale, patchSaleStatus, deleteSale,
     shareExport, shareFullBackup, uploadBackup,
     dataVersion, refresh,
-  }), [user, token, online, doLogin, doLogout, sync, scheduleSync, resolveConflict, retryFailed,
+  }), [user, token, online, doLogin, doLogout, updateProfile, sync, scheduleSync, resolveConflict, retryFailed,
     saveBike, patchBike, deleteBike, saveCustomer, deleteCustomer, saveSale, patchSaleStatus,
     deleteSale, shareExport, shareFullBackup, uploadBackup, dataVersion, refresh]);
 
