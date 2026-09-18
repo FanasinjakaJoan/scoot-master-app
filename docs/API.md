@@ -16,9 +16,9 @@ Légende : 🔓 public · 🔑 connecté · 👑 admin.
 
 | Méthode | Route | Accès | Body / Renvoie |
 |---|---|---|---|
-| POST | `/api/auth/login` | 🔓 | `{username, password}` → `{token, user{id, username, fullName, role}}` — 401 si identifiants erronés |
+| POST | `/api/auth/login` | 🔓 | `{username, password}` → `{token, expiresAt, expiresIn, user{id, username, fullName, role}}` — 401 si identifiants erronés. `expiresAt` (epoch ms, calculé par le serveur) permet au client de renouveler sans dépendre de l'horloge de l'appareil |
 | GET | `/api/auth/me` | 🔑 | → `{user}` (profil courant) |
-| POST | `/api/auth/refresh` | 🔑 | Renouvelle le jeton (glissement de session) : re-vérifie en base que le compte existe et reste actif → `{token, user}`. 401 JSON si jeton invalide/expiré ou compte désactivé — le client déclenche alors la réauthentification **sans purger sa file locale** |
+| POST | `/api/auth/refresh` | 🔑 | Renouvelle le jeton (glissement de session) : re-vérifie en base que le compte existe et reste actif → `{token, expiresAt, expiresIn, user}`. Accepte aussi un jeton **récemment expiré** (fenêtre `JWT_REFRESH_GRACE`, 60 j par défaut) afin qu'un appareil resté hors ligne retrouve sa session. 401 JSON si jeton mal signé, expiré hors tolérance, ou compte supprimé/désactivé — le client déclenche alors la réauthentification **sans purger sa file locale** |
 
 Toutes les réponses d'erreur sont JSON explicites : `{"error":"Authentification requise."}`,
 `{"error":"Jeton invalide ou expiré."}`, `{"error":"Droits insuffisants (rôle requis : admin)."}`…

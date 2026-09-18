@@ -17,6 +17,10 @@ services:
       PORT: "4000"
       DB_PATH: /app/data/scoot.db
       JWT_SECRET: ${JWT_SECRET:-changez-moi-en-production}
+      # Session longue + renouvellement glissant : l'utilisateur reste connecté
+      # tant qu'il ne se déconnecte pas lui-même.
+      JWT_TTL: ${JWT_TTL:-30d}
+      JWT_REFRESH_GRACE: ${JWT_REFRESH_GRACE:-60d}
       CORS_ORIGIN: "*"
       SEED_ON_START: ${SEED_ON_START:-true}
     volumes:

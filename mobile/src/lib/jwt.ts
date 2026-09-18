@@ -56,3 +56,42 @@ export function isTokenExpiringSoon(token: string | null | undefined, horizonMs 
   const expiresAt = jwtExpiresAt(token);
   return expiresAt !== null && expiresAt - horizonMs <= at;
 }
+
+/**
+ * Tolérance d'horloge appliquée avant de considérer localement une session
+ * comme perdue.
+ *
+ * L'horloge d'un téléphone (ou d'un PC) peut avancer de plusieurs minutes,
+ * voire de plusieurs heures, par rapport au serveur qui a signé le jeton.
+ * Sans tolérance, un jeton parfaitement valide est jugé « expiré » dès
+ * l'ouverture de l'application et l'utilisateur est déconnecté quelques
+ * secondes après s'être connecté. On ne se fie donc jamais à l'horloge locale
+ * seule : seul le serveur tranche (via /api/auth/refresh).
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 24 h
+
+/**
+ * Jeton définitivement inutilisable du point de vue du client : absent,
+ * malformé, ou expiré depuis plus que la tolérance d'horloge.
+ *
+ * À utiliser pour décider d'un abandon de session LOCAL. Tout le reste
+ * (jeton frais, bientôt expiré, ou expiré récemment) doit passer par un
+ * renouvellement serveur — jamais par une déconnexion locale.
+ */
+export function isTokenUnusable(token: string | null | undefined, at: number = Date.now()): boolean {
+  if (!token) return true;
+  const expiresAt = jwtExpiresAt(token);
+  if (expiresAt === null) return true; // malformé : illisible, donc inutilisable
+  return expiresAt + CLOCK_SKEW_TOLERANCE_MS <= at;
+}
+
+/**
+ * Le jeton doit-il être renouvelé auprès du serveur avant d'être utilisé ?
+ * Vrai s'il est expiré (selon l'horloge locale) ou proche de l'échéance.
+ */
+export function needsRefresh(token: string | null | undefined, horizonMs = 30 * 60 * 1000, at: number = Date.now()): boolean {
+  if (!token) return false;
+  const expiresAt = jwtExpiresAt(token);
+  if (expiresAt === null) return false;
+  return expiresAt - horizonMs <= at;
+}

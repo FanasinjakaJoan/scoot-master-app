@@ -56,6 +56,17 @@ services:
       # Render injecte PORT=10000 automatiquement. backend/src/config.js lit process.env.PORT
       - key: JWT_SECRET
         generateValue: true # Render génère une chaîne aléatoire sécurisée
+        # Généré UNE SEULE FOIS au premier déploiement puis conservé : les
+        # sessions survivent aux redéploiements. Ne le régénérez pas à la main,
+        # cela déconnecterait tous les utilisateurs.
+      # Session longue : l'utilisateur reste connecté jusqu'à SA déconnexion.
+      # L'app renouvelle le jeton en arrière-plan (POST /api/auth/refresh).
+      - key: JWT_TTL
+        value: "30d"
+      # Un jeton expiré depuis moins de 60 j reste renouvelable : un appareil
+      # resté hors ligne retrouve sa session au lieu d'être déconnecté.
+      - key: JWT_REFRESH_GRACE
+        value: "60d"
       - key: SEED_ON_START
         value: "true" # idempotent : ne sème que si la base est vide (admin/admin123, vendeur/vendeur123)
       - key: CORS_ORIGIN
