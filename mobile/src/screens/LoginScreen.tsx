@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
@@ -9,11 +9,15 @@ import { InstallAppCard } from '../components/InstallAppCard';
 import { useApp } from '../store/AppStore';
 
 export function LoginScreen() {
-  const { doLogin } = useApp();
+  const { doLogin, authNotice } = useApp();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Motif de réauthentification (session expirée pendant une synchro de fond,
+  // un téléversement de sauvegarde, la gestion des utilisateurs…).
+  useEffect(() => { if (authNotice) setError(authNotice); }, [authNotice]);
 
   async function submit() {
     if (!username.trim() || !password) {

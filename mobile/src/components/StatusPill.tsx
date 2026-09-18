@@ -9,7 +9,7 @@ import { timeAgo } from '../lib/format';
  * - Données à jour / X modifications en attente / Y conflits
  */
 export function StatusPill({
-  online, syncing, lastSyncAt, pending, conflicts, failed, onPress,
+  online, syncing, lastSyncAt, pending, conflicts, failed, authRequired, onPress,
 }: {
   online: boolean;
   syncing: boolean;
@@ -17,26 +17,30 @@ export function StatusPill({
   pending: number;
   conflicts: number;
   failed: number;
+  /** true : 401/403 — réauthentification requise (données locales conservées). */
+  authRequired?: boolean;
   onPress?: () => void;
 }) {
   const waiting = pending + conflicts + failed;
-  const line2 = syncing
-    ? 'Synchronisation…'
-    : conflicts > 0
-      ? `${conflicts} conflit${conflicts > 1 ? 's' : ''} à résoudre`
-      : waiting > 0
-        ? `${waiting} modification${waiting > 1 ? 's' : ''} en attente`
-        : online
-          ? 'Données à jour'
-          : 'Hors ligne — enregistrement local';
+  const line2 = authRequired
+    ? 'Réauthentification requise — données conservées'
+    : syncing
+      ? 'Synchronisation…'
+      : conflicts > 0
+        ? `${conflicts} conflit${conflicts > 1 ? 's' : ''} à résoudre`
+        : waiting > 0
+          ? `${waiting} modification${waiting > 1 ? 's' : ''} en attente`
+          : online
+            ? 'Données à jour'
+            : 'Hors ligne — enregistrement local';
 
   return (
     <Pressable onPress={onPress} style={styles.wrap}>
-      <View style={[styles.dot, { backgroundColor: online ? colors.success : colors.textMuted }]} />
+      <View style={[styles.dot, { backgroundColor: authRequired ? colors.warning : online ? colors.success : colors.textMuted }]} />
       <View style={styles.col}>
         <Text style={styles.state}>{online ? 'En ligne' : 'Hors ligne'}</Text>
-        <Text style={[styles.sub, conflicts > 0 ? { color: colors.warning } : null]}>
-          {syncing ? line2 : `${line2}${lastSyncAt ? ' · ' + timeAgo(lastSyncAt) : ''}`}
+        <Text style={[styles.sub, conflicts > 0 || authRequired ? { color: colors.warning } : null]}>
+          {syncing && !authRequired ? line2 : `${line2}${lastSyncAt ? ' · ' + timeAgo(lastSyncAt) : ''}`}
         </Text>
       </View>
     </Pressable>

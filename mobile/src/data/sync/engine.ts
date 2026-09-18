@@ -12,6 +12,12 @@ import type { User, SyncStatus } from '../../types';
  *         2) PULL — applique les changements serveur plus récents que la copie locale
  * La file locale est la source de vérité hors ligne ; chaque mutation locale
  * (repositories.ts) y dépose une opération avant tout évanouissement possible.
+ *
+ * Résilience auth (401/403) : une erreur d'authentification ne purge JAMAIS la
+ * file. Les opérations sont marquées « suspendues pour raison d'authentification »
+ * (statut conservé = pending, sans brûler de tentative), un signal persistant
+ * `sync_meta.auth_required` est levé pour l'UI, et la transmission reprendra
+ * automatiquement dès qu'un jeton valide sera réinjecté (reconnexion).
  */
 
 export interface SyncOutcome {
@@ -21,9 +27,43 @@ export interface SyncOutcome {
   pulled: number;
   serverTime: string | null;
   error?: string;
+  /** true si le cycle a été stoppé par une erreur d'authentification (401/403). */
+  authRequired?: boolean;
 }
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
+
+export const AUTH_SUSPENDED_MESSAGE = 'Suspendu : réauthentification requise (session expirée). Vos données restent conservées sur cet appareil.';
+
+const META_AUTH_REQUIRED = 'auth_required';
+const META_LAST_ERROR = 'last_sync_error';
+
+/** Erreur d'authentification renvoyée par l'API (401 non authentifié / 403 interdit). */
+export function isAuthError(e: unknown): e is ApiError {
+  return e instanceof ApiError && (e.status === 401 || e.status === 403);
+}
+
+/**
+ * Marque la file comme « suspendue pour raison d'authentification » :
+ * - aucune opération n'est supprimée (aucune perte de données) ;
+ * - les tentatives ne sont PAS incrémentées (les opérations ne doivent pas
+ *   basculer en « échec » pour la seule raison d'une session expirée) ;
+ * - un message explicite est attaché à chaque opération en attente ;
+ * - un signal persistant est levé pour l'UI (bandeau réauthentification).
+ */
+function suspendQueueForAuth(): void {
+  for (const op of repo.pendingOperations(10000, ['pending', 'failed'])) {
+    repo.markQueueOperation(op.id, { status: 'pending', lastError: AUTH_SUSPENDED_MESSAGE });
+  }
+  repo.metaSet(META_AUTH_REQUIRED, '1');
+  repo.metaSet(META_LAST_ERROR, 'Session expirée ou accès refusé — reconnectez-vous pour reprendre la synchronisation.');
+}
+
+/** Lève le signal d'auth (après login réussi ou refresh de jeton). */
+export function clearAuthSuspension(): void {
+  repo.metaSet(META_AUTH_REQUIRED, '0');
+  repo.metaSet(META_LAST_ERROR, '');
+}
 
 /** Pousse la file locale (par lots) et met à jour son état. */
 export async function pushQueue(token: string, deviceId: string, maxBatches = 10): Promise<{ pushed: number; conflicts: number; errors: number }> {
@@ -42,6 +82,10 @@ export async function pushQueue(token: string, deviceId: string, maxBatches = 10
       res = await pushOperations(token, deviceId, batchOps);
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) break; // hors ligne : on stoppe proprement
+      if (isAuthError(e)) {
+        // 401/403 : file conservée, tentative suspendue pour raison d'auth.
+        suspendQueueForAuth();
+      }
       throw e;
     }
 
@@ -91,22 +135,31 @@ export async function pullChangesLocal(token: string): Promise<{ pulled: number;
   let serverTime = since;
   let safety = 0;
 
-  do {
-    const page = await pullChanges(token, since, cursor, 500);
-    serverTime = page.serverTime;
-    for (const change of page.changes) {
-      const applied = repo.applyServerChange(
-        change.entity as 'bikes' | 'customers' | 'sales',
-        change.id,
-        change.op,
-        change.updatedAt,
-        change.data
-      );
-      if (applied) pulled++;
+  try {
+    do {
+      const page = await pullChanges(token, since, cursor, 500);
+      serverTime = page.serverTime;
+      for (const change of page.changes) {
+        const applied = repo.applyServerChange(
+          change.entity as 'bikes' | 'customers' | 'sales',
+          change.id,
+          change.op,
+          change.updatedAt,
+          change.data
+        );
+        if (applied) pulled++;
+      }
+      cursor = page.nextCursor;
+      safety++;
+    } while (cursor && safety < 50);
+  } catch (e) {
+    if (isAuthError(e)) {
+      // 401/403 au PULL : la file et le curseur `last_pull_since` sont conservés
+      // intacts — aucune donnée ne sera sautée à la reconnexion.
+      suspendQueueForAuth();
     }
-    cursor = page.nextCursor;
-    safety++;
-  } while (cursor && safety < 50);
+    throw e;
+  }
 
   repo.metaSet('last_pull_since', serverTime);
   return { pulled, serverTime };
@@ -123,10 +176,19 @@ export async function runSyncCycle(token: string, deviceId: string): Promise<Syn
     const pull = await pullChangesLocal(token);
     outcome.pulled = pull.pulled;
     outcome.serverTime = pull.serverTime;
+    // Succès : le jeton en vigueur est valide — lève toute suspension d'auth.
+    if (repo.metaGet(META_AUTH_REQUIRED) === '1') clearAuthSuspension();
     repo.metaSet('last_sync_at', new Date().toISOString());
+    repo.metaSet(META_LAST_ERROR, '');
     return outcome;
   } catch (e) {
-    outcome.error = e instanceof Error ? e.message : 'Erreur de synchronisation inconnue.';
+    if (isAuthError(e)) {
+      outcome.authRequired = true;
+      outcome.error = 'Session expirée — réauthentification requise. Modifications conservées localement.';
+    } else {
+      outcome.error = e instanceof Error ? e.message : 'Erreur de synchronisation inconnue.';
+      repo.metaSet(META_LAST_ERROR, outcome.error);
+    }
     return outcome;
   }
 }
@@ -178,10 +240,12 @@ export function retryFailedOperation(queueId: number): void {
 
 export function readSyncStatus(): SyncStatus {
   const stats = repo.queueStats();
+  const lastError = repo.metaGet(META_LAST_ERROR);
   return {
     syncing: false,
     lastSyncAt: repo.metaGet('last_sync_at'),
-    lastError: null,
+    lastError: lastError ? lastError : null,
+    authRequired: repo.metaGet(META_AUTH_REQUIRED) === '1',
     pendingCount: stats.pending,
     conflictCount: stats.conflict,
     failedCount: stats.failed,
@@ -250,6 +314,17 @@ export function localBackupSpec(): ExportSpec {
 
 /** Téléverse la sauvegarde locale vers le serveur (option cloud interne). */
 export async function uploadLocalBackup(token: string, fileName: string): Promise<string> {
-  const res = await uploadBackup(token, fileName, repo.localBackup());
-  return res.file;
+  try {
+    const res = await uploadBackup(token, fileName, repo.localBackup());
+    // Succès : une éventuelle attente de re-tentative post-réauth est soldée.
+    repo.metaSet('pending_backup_upload', '0');
+    return res.file;
+  } catch (e) {
+    if (isAuthError(e)) {
+      // Mémorise la demande : elle sera re-tentée automatiquement dès qu'un
+      // jeton valide sera réinjecté (reconnexion), sans perdre la sauvegarde.
+      repo.metaSet('pending_backup_upload', '1');
+    }
+    throw e;
+  }
 }

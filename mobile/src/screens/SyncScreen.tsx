@@ -79,7 +79,21 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
         pending={app.sync.pendingCount}
         conflicts={app.sync.conflictCount}
         failed={app.sync.failedCount}
+        authRequired={app.sync.authRequired}
       />
+      {app.sync.authRequired ? (
+        <Card style={{ borderColor: colors.warning + '88' }}>
+          <Text style={[textStyles.caption, { color: colors.warning, fontWeight: '700' }]}>
+            🔐 Réauthentification requise
+          </Text>
+          <Text style={[textStyles.caption, { marginTop: 4 }]}>
+            Votre session a expiré ou l'accès a été refusé : la transmission est suspendue, mais
+            rien n'est perdu — vos {app.sync.pendingCount} modification(s) en attente et vos sauvegardes
+            restent conservées sur cet appareil. Déconnectez-vous puis reconnectez-vous pour reprendre
+            automatiquement la synchronisation.
+          </Text>
+        </Card>
+      ) : null}
       {app.sync.lastError ? (
         <Card style={{ borderColor: colors.danger + '55' }}>
           <Text style={[textStyles.caption, { color: colors.danger }]}>Dernière erreur : {app.sync.lastError}</Text>
@@ -88,6 +102,11 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
 
       <Button title={app.sync.syncing ? 'Synchronisation…' : 'Synchroniser maintenant'} onPress={onManualSync}
         disabled={app.sync.syncing || !app.online} variant={app.online ? 'primary' : 'secondary'} />
+      {app.sync.authRequired ? (
+        <Text style={textStyles.caption}>
+          La synchronisation reprendra automatiquement dès votre reconnexion.
+        </Text>
+      ) : null}
 
       {/* ---- Conflits ---- */}
       <Text style={[textStyles.h2, styles.section]}>Conflits ({conflicts.length})</Text>
