@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert } from '../lib/alert';
 import { colors, textStyles } from '../theme';
 import { useApp, useCustomers, useBikes, newEntityId } from '../store/AppStore';
 import { Screen, Card } from '../components/Screen';

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -31,7 +32,9 @@ const Tabs = createBottomTabNavigator();
 const asTab = (C: React.ComponentType<any>): React.ComponentType<object> => C as React.ComponentType<object>;
 
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
-  // Icônes emoji simples (aucune dépendance d'icônes)
+  // Icônes emoji simples (aucune dépendance d'icônes).
+  // `Text` (et non un élément HTML) : la barre d'onglets est partagée avec
+  // iOS/Android, où une balise inconnue du runtime natif ferait échouer le rendu.
   const map: Record<string, { on: string; off: string }> = {
     Dashboard: { on: '🏠', off: '🏠' },
     Catalog: { on: '🏍️', off: '🏍️' },
@@ -40,7 +43,7 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     Sync: { on: '🔄', off: '🔄' },
   };
   const t = map[name] || { on: '•', off: '•' };
-  return <span style={{ fontSize: 16, opacity: focused ? 1 : 0.55 }}>{focused ? t.on : t.off}</span>;
+  return <Text style={{ fontSize: 16, opacity: focused ? 1 : 0.55 }}>{focused ? t.on : t.off}</Text>;
 }
 
 function MainTabs() {

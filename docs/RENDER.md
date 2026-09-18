@@ -15,7 +15,8 @@ Internet (HTTPS)
     │       Stage 2 : node:22-alpine → sert /dist + proxy /api/*
     │     - Serveur : deploy/web-server.js (zéro dépendance, Node ≥20)
     │       * Fichiers statiques avec cache immutable pour _expo/static
-    │       * COOP/COEP headers pour WASM (expo-sqlite web)
+    │       * Aucun en-tête d'isolation requis : la base SQLite web (sql.js)
+    │         tourne sur le thread principal, pas dans un Worker + SharedArrayBuffer
     │       * Proxy HTTP minimal vers l'API via réseau privé
     │
     └─► scoot-master-api.onrender.com (service web Docker, plan starter)

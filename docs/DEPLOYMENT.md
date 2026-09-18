@@ -90,7 +90,24 @@ docker run -d --name web -p 8080:8080 -e API_TARGET=http://api:4000 \
 Ouvrir l'URL du service `web` (ex. `http://localhost:8080`). Se connecter
 avec `admin / admin123`. Le catalogue, les ventes, les clients, les exports
 (CSV/JSON téléchargés par le navigateur) et la synchronisation fonctionnent
-comme sur mobile (stockage local SQLite via WASM).
+comme sur mobile.
+
+Sans Docker, depuis le dépôt :
+
+```bash
+cd backend && npm install && npm start &      # API : http://localhost:4000
+cd ../mobile && npm install
+npm run build:web                             # expo export --platform web → mobile/dist
+npm run serve:web                             # http://localhost:8080 (statique + relais /api)
+npm run smoke:web -- --login admin admin123   # contrôle automatique du rendu (DOM simulé)
+```
+
+Le stockage local du navigateur est une vraie base SQLite (`sql.js`, moteur
+WASM exécuté sur le thread principal, fichier persisté en IndexedDB — voir
+`mobile/src/data/local/db.web.ts`) : mêmes requêtes, mêmes transactions et mêmes
+comportements offline-first que sur l'appareil natif. Aucun en-tête
+COOP/COEP, aucun Web Worker et aucun `SharedArrayBuffer` ne sont nécessaires —
+l'app se comporte donc à l'identique en onglet, en iframe ou en export statique.
 
 ### 3.2 Sur mobile — navigateur
 

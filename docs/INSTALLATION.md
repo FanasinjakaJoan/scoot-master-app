@@ -148,6 +148,34 @@ L'ajout de photos utilise la galerie :
 - Base locale : `scootmaster.db` (stockage interne de l'app, persistant).
 - Token & profil : `expo-secure-store` (cléring natif).
 - Réinitialiser l'app = réinstaller l'app (ou vider son stockage).
+- Navigateur : base `scootmaster.db` en IndexedDB (clé `scootmaster.db` de la
+  base `scoot-master`), repli `localStorage` ; session en `localStorage`.
+  Vider le stockage du site (ou les DevTools → Application → IndexedDB) remet
+  l'app web à zéro.
+
+### 3.7 Application web (navigateur)
+
+Même code source, compilé pour le navigateur (React Native Web) :
+
+```bash
+npm run web          # développement : http://localhost:8081 (Metro relaie /api → :4000)
+npm run build:web    # export statique → mobile/dist
+npm run serve:web    # http://localhost:8080 (statique + relais /api vers le backend)
+```
+
+- L'API est appelée sur la **même origine** (`/api/...`) : pas de CORS, ni en
+  développement (proxy Metro, cible `EXPO_WEB_API_TARGET`) ni en production
+  (`deploy/web-server.js`).
+- La base SQLite locale du navigateur est fournie par `sql.js` (moteur WASM sur
+  le thread principal) via `src/data/local/db.web.ts` : pas de Web Worker, pas
+  de `SharedArrayBuffer`, pas d'en-têtes COOP/COEP — l'app tourne aussi bien
+  dans un onglet, une iframe qu'en export statique.
+- Contrôles rapides :
+
+```bash
+npm run smoke:web                                    # écran de connexion, 0 erreur runtime
+npm run smoke:web -- --login admin admin123 --write  # session, sync, navigation, formulaire
+```
 
 ---
 

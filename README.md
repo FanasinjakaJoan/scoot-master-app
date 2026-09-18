@@ -97,21 +97,22 @@ scoot-master-app/
 │   ├── tests/                 ← 24 tests (node:test) : API, auth, sync
 │   └── Dockerfile             ← image de production de l'API
 └── mobile/                    ← App React Native (Expo SDK 57, TypeScript)
-    ├── App.tsx
+    ├── App.tsx                ← garde d'initialisation (base locale) + ErrorBoundary
     ├── Dockerfile             ← image web (expo export --platform web + proxy /api)
-    ├── metro.config.js        ← support WASM (expo-sqlite web) + COOP/COEP
+    ├── metro.config.js        ← asset WASM (sql.js web), repli modules node, proxy /api du dev server
+    ├── scripts/web-smoke.mjs  ← smoke test « navigateur » (jsdom) du build web
     ├── src/
     │   ├── store/AppStore.tsx ← session, réseau, orchestration sync, hooks
     │   ├── navigation/        ← onglets + pile (React Navigation v7)
     │   ├── screens/           ← 12 écrans (login, accueil, catalogue, …)
     │   ├── components/        ← cartes, badges, formulaire, indicateur de statut
     │   ├── data/
-    │   │   ├── local/         ← base SQLite + repositories (seuls écrivains)
+    │   │   ├── local/         ← base SQLite (expo-sqlite natif / sql.js web) + repositories
     │   │   ├── api/           ← client HTTP (JWT)
     │   │   └── sync/          ← moteur de sync (push/pull), LWW, conflits
-    │   ├── lib/               ← uuid, formatage, CSV, configuration
+    │   ├── lib/               ← uuid, formatage, CSV, configuration, alert
     │   └── theme.ts
-    └── __tests__/             ← tests unitaires (jest) : LWW, CSV, formats
+    └── __tests__/             ← tests unitaires (jest) : LWW, CSV, formats, base web
 ```
 
 ## 🚀 Démarrage rapide
@@ -145,7 +146,32 @@ npx expo start       # scanner avec l'app Expo Go (ou npm run android / ios)
   `EXPO_PUBLIC_API_URL`.
 - Détail complet : [docs/INSTALLATION.md](docs/INSTALLATION.md)
 
-### 3. Scénario de démonstration (offline → conflit → résolution)
+### 3. Application web (navigateur)
+
+L'app Expo se compile aussi pour le navigateur (React Native Web) ; c'est la
+version servie par `docker compose` et par Render.
+
+```bash
+cd mobile
+npm run build:web    # expo export --platform web → mobile/dist
+npm run serve:web    # http://localhost:8080  (statique + relais /api → backend)
+```
+
+- En développement, `npm run web` suffit : le serveur Metro relaie déjà `/api`
+  vers `http://127.0.0.1:4000` (cible modifiable via `EXPO_WEB_API_TARGET`).
+- La base locale SQLite tourne dans le navigateur grâce à `sql.js` (mêmes
+  capacités SQL qu'en natif, instantanés persistés en IndexedDB) : voir
+  `mobile/src/data/local/db.web.ts`. Aucune isolation cross-origin (COOP/COEP),
+  aucun Web Worker et aucun `SharedArrayBuffer` ne sont requis — l'app fonctionne
+  donc aussi bien en onglet, en iframe d'aperçu qu'en export statique.
+- Vérification rapide du build (DOM simulé, sans navigateur) :
+
+```bash
+npm run smoke:web                     # écran de connexion rendu, 0 erreur runtime
+npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, onglets
+```
+
+### 4. Scénario de démonstration (offline → conflit → résolution)
 
 1. Mettez l'app en **mode avion** → créez une moto et un bon de commande (tout est
    enregistré localement, l'indicateur affiche « X modifications en attente »).
@@ -159,9 +185,10 @@ npx expo start       # scanner avec l'app Expo Go (ou npm run android / ios)
 | Couche | Commande | Contenu |
 |---|---|---|
 | Backend | `cd backend && npm test` | 24 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sync push/pull, LWW, conflits, `force` admin, renumérotation des bons, pagination par curseur |
-| Mobile | `cd mobile && npm test` | 12 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne |
+| Mobile | `cd mobile && npm test` | 36 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints) |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
-| Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, wasm inclus) |
+| Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés |
+| Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
 
 ## 🐳 Docker & Hébergement
 

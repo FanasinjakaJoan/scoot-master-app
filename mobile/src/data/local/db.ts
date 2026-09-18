@@ -1,124 +1,40 @@
 import * as SQLite from 'expo-sqlite';
 
+import { SCHEMA } from './schema';
+
 /**
- * Base SQLite locale (persistance hors ligne).
+ * Base SQLite locale (persistance hors ligne) — implémentation NATIVE.
+ *
  * Miroir du schéma serveur + tables de synchronisation (queue, conflits, méta).
  * Toutes les écritures passent par les repositories (src/data/local/repositories.ts).
+ *
+ * En natif (iOS / Android), `expo-sqlite` ouvre la base de façon synchrone :
+ * l'API `…Sync` est disponible immédiatement, `initLocalDb()` n'a donc rien à
+ * faire. Dans le navigateur, c'est `db.web.ts` qui remplace ce module
+ * (Metro résout `./db` → `db.web.ts` sur la cible web) avec une ouverture
+ * asynchrone du moteur SQLite/WASM.
+ *
+ * ⚠️ Ne pas utiliser `openDatabaseSync` côté web : l'implémentation web
+ * d'`expo-sqlite` passe par un Worker + `SharedArrayBuffer`, ce qui exige un
+ * contexte « crossOriginIsolated » (en-têtes COOP/COEP) et un bundle de Worker —
+ * conditions impossibles à garantir (aperçu intégré, export statique), d'où une
+ * page blanche. Voir `db.web.ts`.
  */
-export const localDb = SQLite.openDatabaseSync('scootmaster.db');
-
-export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS bikes (
-  id TEXT PRIMARY KEY,
-  brand TEXT NOT NULL,
-  model TEXT NOT NULL,
-  year INTEGER,
-  mileage_km INTEGER NOT NULL DEFAULT 0,
-  engine_cc INTEGER,
-  color TEXT,
-  serial_number TEXT,
-  price INTEGER NOT NULL DEFAULT 0,
-  currency TEXT NOT NULL DEFAULT 'MGA',
-  mechanical_state INTEGER NOT NULL DEFAULT 3,
-  aesthetic_state INTEGER NOT NULL DEFAULT 3,
-  status TEXT NOT NULL DEFAULT 'available',
-  description TEXT,
-  warehouse TEXT,
-  photos TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT,
-  updated_by TEXT,
-  device_id TEXT,
-  deleted_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_l_bikes_status ON bikes (status);
-CREATE INDEX IF NOT EXISTS idx_l_bikes_updated ON bikes (updated_at);
-
-CREATE TABLE IF NOT EXISTS customers (
-  id TEXT PRIMARY KEY,
-  first_name TEXT NOT NULL,
-  last_name TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  email TEXT,
-  address TEXT,
-  notes TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT,
-  updated_by TEXT,
-  device_id TEXT,
-  deleted_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_l_customers_updated ON customers (updated_at);
-
-CREATE TABLE IF NOT EXISTS sales (
-  id TEXT PRIMARY KEY,
-  sale_number TEXT NOT NULL,
-  customer_id TEXT NOT NULL,
-  total INTEGER NOT NULL DEFAULT 0,
-  discount INTEGER NOT NULL DEFAULT 0,
-  amount_paid INTEGER NOT NULL DEFAULT 0,
-  payment_method TEXT NOT NULL DEFAULT 'cash',
-  payment_status TEXT NOT NULL DEFAULT 'unpaid',
-  status TEXT NOT NULL DEFAULT 'brouillon',
-  sale_date TEXT NOT NULL,
-  notes TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT,
-  updated_by TEXT,
-  device_id TEXT,
-  deleted_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_l_sales_status ON sales (status);
-CREATE INDEX IF NOT EXISTS idx_l_sales_customer ON sales (customer_id);
-CREATE INDEX IF NOT EXISTS idx_l_sales_updated ON sales (updated_at);
-
-CREATE TABLE IF NOT EXISTS sale_items (
-  id TEXT PRIMARY KEY,
-  sale_id TEXT NOT NULL,
-  bike_id TEXT NOT NULL,
-  unit_price INTEGER NOT NULL DEFAULT 0,
-  quantity INTEGER NOT NULL DEFAULT 1
-);
-CREATE INDEX IF NOT EXISTS idx_l_items_sale ON sale_items (sale_id);
-
--- ---- Tables de synchronisation (locales uniquement) ----
-
-CREATE TABLE IF NOT EXISTS sync_queue (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity TEXT NOT NULL,
-  op TEXT NOT NULL,
-  entity_id TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  client_ts TEXT NOT NULL,
-  force INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'pending',
-  attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_l_queue_status ON sync_queue (status, id);
-
-CREATE TABLE IF NOT EXISTS sync_conflicts (
-  queue_id INTEGER PRIMARY KEY,
-  entity TEXT NOT NULL,
-  entity_id TEXT NOT NULL,
-  server_data TEXT NOT NULL,
-  detected_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sync_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-`;
+export const localDb: SQLite.SQLiteDatabase = SQLite.openDatabaseSync('scootmaster.db');
 
 localDb.execSync(SCHEMA);
 
-/** Horodatage local ISO-8601 UTC (clé LWW côté client). */
-export const nowIso = () => new Date().toISOString();
+export { SCHEMA, nowIso } from './schema';
+
+/**
+ * Point d'initialisation asynchrone appelé avant le rendu de l'application.
+ * No-op en natif (base déjà ouverte), nécessaire sur web.
+ */
+export async function initLocalDb(): Promise<void> {
+  // Rien à faire : l'ouverture synchrone a déjà été effectuée à l'import.
+}
+
+/** Force la persistance de l'état courant (no-op en natif, SQLite écrit en direct). */
+export async function flushLocalDb(): Promise<void> {
+  // natif : les écritures sont déjà durables
+}

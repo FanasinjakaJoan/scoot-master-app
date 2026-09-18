@@ -81,8 +81,8 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute', right: 20, bottom: 24, width: 56, height: 56, borderRadius: 28,
     backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    // `boxShadow` remplace les propriétés `shadow*` (dépréciées sur web, RN 0.86+)
+    boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
   },
   fabText: { color: '#fff', fontSize: 28, fontWeight: '700', lineHeight: 30 },
 });
