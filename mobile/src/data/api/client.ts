@@ -53,6 +53,17 @@ export async function login(username: string, password: string): Promise<{ token
   );
 }
 
+/**
+ * Renouvelle le jeton courant (glissement de session). Le serveur re-vérifie
+ * que le compte existe toujours et reste actif. En cas d'expiration → ApiError
+ * 401 : l'appelant doit déclencher la réauthentification (jamais une purge locale).
+ */
+export function refreshToken(token: string): Promise<{ token: string; user: { id: string; username: string; fullName: string; role: string } }> {
+  return apiCall<{ token: string; user: { id: string; username: string; fullName: string; role: string } }>(
+    token, 'POST', '/api/auth/refresh'
+  );
+}
+
 // ---------------------------------------------------------------------
 // Synchronisation
 // ---------------------------------------------------------------------
@@ -114,4 +125,13 @@ export function serverStatus(token: string): Promise<{ ok: boolean; service: str
 export type ManagedUser = { id: string; username: string; fullName: string; role: 'admin' | 'seller'; active: boolean };
 export function listUsers(token: string) { return apiCall<{ users: ManagedUser[] }>(token, 'GET', '/api/users'); }
 export function createUser(token: string, body: { username: string; fullName: string; password: string; role: 'admin' | 'seller' }) { return apiCall<{ user: ManagedUser }>(token, 'POST', '/api/users', body); }
-export function updateUser(token: string, id: string, body: Partial<{ fullName: string; password: string; role: 'admin' | 'seller'; active: boolean }>) { return apiCall<{ ok: boolean }>(token, 'PATCH', `/api/users/${id}`, body); }
+export function updateUser(token: string, id: string, body: Partial<{ fullName: string; password: string; role: 'admin' | 'seller'; active: boolean }>) { return apiCall<{ ok: boolean; user?: ManagedUser }>(token, 'PATCH', `/api/users/${id}`, body); }
+
+/**
+ * MON profil — auto-service réservé au compte courant (nom affiché + mot de
+ * passe). Endpoint dédié `PATCH /api/users/profile` : accessible à tout
+ * utilisateur authentifié, sans jamais toucher au rôle ni au statut.
+ */
+export function updateMyProfile(token: string, body: { fullName?: string; password?: string }): Promise<{ ok: boolean; user: ManagedUser }> {
+  return apiCall<{ ok: boolean; user: ManagedUser }>(token, 'PATCH', '/api/users/profile', body);
+}

@@ -283,6 +283,47 @@ check('liste des sauvegardes refusée au vendeur (403)', backupListSeller.status
 const status = await req('GET', '/api/sync/status', { token: tAdmin });
 check('GET /api/sync/status', status.status === 200, JSON.stringify(status.body).slice(0, 120));
 
+// ---------- 15. AUTH : refresh, profil auto-service, RBAC utilisateurs ----------
+const noAuthUsers = await req('GET', '/api/users');
+check('GET /api/users sans jeton → 401 JSON', noAuthUsers.status === 401 && !!noAuthUsers.body?.error,
+  `status=${noAuthUsers.status}, body=${JSON.stringify(noAuthUsers.body)}`);
+const usersSeller = await req('GET', '/api/users', { token: tSeller });
+check('GET /api/users refusé au vendeur → 403', usersSeller.status === 403, `status=${usersSeller.status}`);
+
+const usersAdmin = await req('GET', '/api/users', { token: tAdmin });
+check('GET /api/users autorisé à l admin', usersAdmin.status === 200 && Array.isArray(usersAdmin.body?.users),
+  `${(usersAdmin.body?.users || []).length} comptes`);
+const sellerId = usersAdmin.body?.users?.find((u) => u.username === 'vendeur')?.id;
+const adminId = usersAdmin.body?.users?.find((u) => u.username === 'admin')?.id;
+
+const profileSeller = await req('PATCH', '/api/users/profile', {
+  token: tSeller, body: { fullName: 'Hery Andrianja (Vendeur) — E2E' },
+});
+check('PATCH /api/users/profile (auto-service vendeur)', profileSeller.status === 200 && !!profileSeller.body?.user,
+  `fullName=${profileSeller.body?.user?.fullName}`);
+
+const promoteSeller = await req('PATCH', `/api/users/${sellerId}`, { token: tSeller, body: { role: 'admin' } });
+check('auto-promotion refusée au vendeur → 403', promoteSeller.status === 403, `status=${promoteSeller.status}`);
+const editOther = await req('PATCH', `/api/users/${adminId}`, { token: tSeller, body: { fullName: 'Piraté' } });
+check('édition d un autre compte refusée au vendeur → 403', editOther.status === 403, `status=${editOther.status}`);
+
+const roleChange = await req('PUT', `/api/users/${sellerId}`, { token: tAdmin, body: { role: 'admin' } });
+check('PUT /api/users/:id changement de rôle par l admin', roleChange.status === 200 && roleChange.body?.user?.role === 'admin');
+await req('PATCH', `/api/users/${sellerId}`, { token: tAdmin, body: { role: 'seller' } });
+
+const refreshSeller = await req('POST', '/api/auth/refresh', { token: tSeller });
+check('POST /api/auth/refresh renouvelle le jeton', refreshSeller.status === 200 && !!refreshSeller.body?.token
+  && refreshSeller.body?.user?.username === 'vendeur');
+const meRefreshed = await req('GET', '/api/auth/me', { token: refreshSeller.body?.token });
+check('jeton rafraîchi utilisable sur /api/auth/me', meRefreshed.status === 200);
+const refreshBad = await req('POST', '/api/auth/refresh', { token: 'abc.def.ghi' });
+check('refresh avec jeton invalide → 401 JSON', refreshBad.status === 401 && !!refreshBad.body?.error);
+
+const pushNoAuthE2E = await req('POST', '/api/sync/push', { body: { deviceId: 'd', operations: [{ entity: 'bikes', op: 'update', id: 'x', clientTs: iso() }] } });
+check('PUSH sans jeton → 401 JSON', pushNoAuthE2E.status === 401 && !!pushNoAuthE2E.body?.error);
+const backupNoAuthE2E = await req('POST', '/api/exports/backup', { body: { fileName: 'x', data: {} } });
+check('téléversement sans jeton → 401 JSON', backupNoAuthE2E.status === 401 && !!backupNoAuthE2E.body?.error);
+
 console.log('\n=== Résultat de la vérification de bout en bout ===');
 results.forEach((r) => console.log(r));
 console.log(`\nTOTAL : ${pass} réussis / ${fail} échoués (sur ${pass + fail})`);

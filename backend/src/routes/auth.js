@@ -35,5 +35,27 @@ module.exports = function authRoutes(db) {
     res.json({ user: req.user });
   });
 
+  /**
+   * POST /api/auth/refresh — renouvelle le jeton (glissement de session).
+   * Le jeton courant doit être VALIDE (non expiré) : il sert à ré-émettre un
+   * JWT frais pour le même compte, après re-vérification en base que l'utilisateur
+   * existe toujours et reste actif (révocation immédiate à la désactivation).
+   * Un jeton expiré → 401 JSON explicite : le client doit ré-authentifier
+   * l'utilisateur (sans jamais purger sa file de synchronisation locale).
+   */
+  r.post('/refresh', requireAuth, (req, res) => {
+    const u = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(req.user.id);
+    if (!u) return res.status(401).json({ error: 'Compte introuvable ou désactivé — reconnexion requise.' });
+    const token = jwt.sign(
+      { sub: u.id, username: u.username, role: u.role, fullName: u.full_name },
+      config.jwtSecret,
+      { expiresIn: config.jwtTtl }
+    );
+    res.json({
+      token,
+      user: { id: u.id, username: u.username, fullName: u.full_name, role: u.role },
+    });
+  });
+
   return r;
 };

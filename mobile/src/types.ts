@@ -126,6 +126,8 @@ export interface SyncStatus {
   syncing: boolean;
   lastSyncAt: string | null;
   lastError: string | null;
+  /** true : 401/403 en vigueur — réauthentification requise (file locale conservée). */
+  authRequired: boolean;
   pendingCount: number;
   conflictCount: number;
   failedCount: number;

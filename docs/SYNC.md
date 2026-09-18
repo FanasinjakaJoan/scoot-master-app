@@ -171,6 +171,9 @@ Dans l'écran **Sync**, chaque conflit propose :
 | Double push du même lot (réseau instable, double envoi) | L'idempotence (même état) et la LWW rendent le re-push sans effet de bord |
 | Lot très volumineux | Découpage côté client par 200 opérations (max serveur : 500) |
 | Échec serveur répété (contrainte, FK) | `error` avec message ; 5 tentatives ⇒ `failed` + relance manuelle depuis l'écran Sync |
+| **Erreur d'authentification (401/403) pendant PUSH ou PULL** | La file n'est **jamais purgée** : les opérations restent `pending`, marquées « Suspendu : réauthentification requise » sans consommer de tentative, le curseur `last_pull_since` n'avance pas, et le signal persistant `auth_required` affiche le bandeau « Réauthentification requise ». La transmission reprend automatiquement dès la reconnexion (jeton valide réinjecté) |
+| **Session expirée au démarrage / en arrière-plan** | Le client relit le jeton dans le stockage sécurisé avant chaque transmission, vérifie `exp` localement, le renouvelle via `POST /api/auth/refresh` s'il expire bientôt ; si l'expiration est effective, redirection propre vers l'écran de connexion — **données locales et file intactes** |
+| **Téléversement de sauvegarde refusé (401/403)** | La demande est mémorisée (`pending_backup_upload`) et **re-tentée automatiquement** après la reconnexion, avec confirmation à l'utilisateur |
 
 ## 7. Exemple chronologique complet
 

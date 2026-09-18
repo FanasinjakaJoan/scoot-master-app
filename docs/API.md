@@ -18,6 +18,20 @@ Légende : 🔓 public · 🔑 connecté · 👑 admin.
 |---|---|---|---|
 | POST | `/api/auth/login` | 🔓 | `{username, password}` → `{token, user{id, username, fullName, role}}` — 401 si identifiants erronés |
 | GET | `/api/auth/me` | 🔑 | → `{user}` (profil courant) |
+| POST | `/api/auth/refresh` | 🔑 | Renouvelle le jeton (glissement de session) : re-vérifie en base que le compte existe et reste actif → `{token, user}`. 401 JSON si jeton invalide/expiré ou compte désactivé — le client déclenche alors la réauthentification **sans purger sa file locale** |
+
+Toutes les réponses d'erreur sont JSON explicites : `{"error":"Authentification requise."}`,
+`{"error":"Jeton invalide ou expiré."}`, `{"error":"Droits insuffisants (rôle requis : admin)."}`…
+
+## Utilisateurs (gestion des comptes)
+
+| Méthode | Route | Accès | Description |
+|---|---|---|---|
+| GET | `/api/users` | 👑 | Liste complète `{users[{id, username, fullName, role, active, createdAt, updatedAt}]}` |
+| POST | `/api/users` | 👑 | `{username, password (8 car. min), fullName, role: admin\|seller}` → 201 `{user}` |
+| PATCH | `/api/users/profile` | 🔑 | **Mon profil** (auto-service) : `{fullName?, password?}` → `{ok, user}`. Le rôle et le statut ne sont PAS modifiables par cette voie |
+| PATCH | `/api/users/:id` | 🔑 soi · 👑 | Édition : `fullName?`, `password?` (soi ou admin) ; `role?`, `active?` (**admin uniquement**). Un admin ne peut ni changer son propre rôle ni se désactiver. `active` non fourni ⇒ statut inchangé (une édition ne réactive jamais un compte désactivé) |
+| PUT | `/api/users/:id` | 🔑 soi · 👑 | Alias de `PATCH /api/users/:id` |
 
 ## Catalogue — motos
 
