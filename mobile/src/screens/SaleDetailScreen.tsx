@@ -7,15 +7,21 @@ import { saleById, bikeById } from '../data/local/repositories';
 import { Screen, Card } from '../components/Screen';
 import { Badge, PAYMENT_BADGES, SALE_BADGES } from '../components/Badge';
 import { Button, Row } from '../components/Buttons';
+import { PasswordConfirmModal } from '../components/PasswordConfirmModal';
 import { EmptyState } from '../components/EmptyState';
 import { formatMoney, timeAgo } from '../lib/format';
 import type { SaleStatus } from '../types';
 import type { NavigatorProp } from '../navigation/types';
 
 export function SaleDetailScreen({ navigation, route }: NavigatorProp<'SaleDetail'>) {
-  const { dataVersion, patchSaleStatus, deleteSale, user } = useApp();
+  const { dataVersion, patchSaleStatus, deleteSale, confirmPassword, user } = useApp();
   const id = route.params.id;
   const [sale, setSale] = useState(saleById(id));
+
+  const [showPwd, setShowPwd] = useState(false);
+  const [pwdBusy, setPwdBusy] = useState(false);
+  const [pwdError, setPwdError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState(false);
 
   useEffect(() => { setSale(saleById(id)); }, [id, dataVersion]);
 
@@ -38,11 +44,30 @@ export function SaleDetailScreen({ navigation, route }: NavigatorProp<'SaleDetai
   };
 
   const confirmDelete = () => {
-    Alert.alert('Supprimer ce bon ?', 'Les motos concernées seront remises en stock (si libres).', [
-      { text: 'Annuler', style: 'cancel' },
-      { text: 'Supprimer', style: 'destructive', onPress: () => { deleteSale(sale.id); navigation.goBack(); } },
-    ]);
+    setPwdError(null);
+    setPendingDelete(true);
+    setShowPwd(true);
   };
+
+  async function handlePasswordConfirm(pwd: string) {
+    if (!pwd) { setPwdError('Mot de passe requis.'); return; }
+    if (!sale) { setPwdError('Vente introuvable.'); return; }
+    setPwdBusy(true);
+    setPwdError(null);
+    try {
+      await confirmPassword(pwd);
+      if (pendingDelete) {
+        deleteSale(sale.id);
+        setShowPwd(false);
+        setPendingDelete(false);
+        navigation.goBack();
+      }
+    } catch (e) {
+      setPwdError(e instanceof Error ? e.message : 'Mot de passe incorrect.');
+    } finally {
+      setPwdBusy(false);
+    }
+  }
 
   return (
     <Screen
@@ -106,10 +131,24 @@ export function SaleDetailScreen({ navigation, route }: NavigatorProp<'SaleDetai
             <Button small title="Annuler" variant="danger" onPress={() => act('annule', 'Annulation')} />
           ) : null}
           {user?.role === 'admin' ? (
-            <Button small title="Supprimer" variant="danger" onPress={confirmDelete} />
+            <Button small title="Supprimer 🔐" variant="danger" onPress={confirmDelete} />
           ) : null}
         </View>
+        {user?.role === 'admin' ? (
+          <Text style={[textStyles.caption, { marginTop: 8 }]}>La suppression nécessite une confirmation par mot de passe.</Text>
+        ) : null}
       </Card>
+
+      <PasswordConfirmModal
+        visible={showPwd}
+        title="Supprimer ce bon"
+        message={`Le bon ${sale.sale_number} sera supprimé et les motos remises en stock. Cette action sensible nécessite une confirmation par mot de passe.`}
+        confirmLabel="Supprimer"
+        onConfirm={handlePasswordConfirm}
+        onCancel={() => { setShowPwd(false); setPwdError(null); setPendingDelete(false); }}
+        busy={pwdBusy}
+        error={pwdError}
+      />
     </Screen>
   );
 }

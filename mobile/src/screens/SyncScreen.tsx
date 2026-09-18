@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Alert } from '../lib/alert';
-import { StatusBar } from 'expo-status-bar';
 import { colors, textStyles } from '../theme';
 import { useApp } from '../store/AppStore';
-import { pendingOperations, listConflicts, queueOperationById } from '../data/local/repositories';
+import { pendingOperations, listConflicts } from '../data/local/repositories';
 import { Screen, Card } from '../components/Screen';
 import { StatusPill } from '../components/StatusPill';
 import { Button, Row } from '../components/Buttons';
-import { EmptyState } from '../components/EmptyState';
+import { PasswordConfirmModal } from '../components/PasswordConfirmModal';
 import { timeAgo } from '../lib/format';
 import type { ConflictRecord } from '../types';
 import type { NavigatorProp } from '../navigation/types';
@@ -16,6 +15,12 @@ import type { NavigatorProp } from '../navigation/types';
 const ENTITY_ICON: Record<string, string> = { bikes: '🏍️', customers: '👥', sales: '🧾' };
 const ENTITY_LABEL: Record<string, string> = { bikes: 'Moto', customers: 'Client', sales: 'Vente' };
 const OP_LABEL: Record<string, string> = { create: 'Création', update: 'Modification', delete: 'Suppression' };
+
+type PendingAction =
+  | { kind: 'upload' }
+  | { kind: 'force'; conflict: ConflictRecord }
+  | { kind: 'reauth' }
+  | null;
 
 export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
   const app = useApp();
@@ -25,7 +30,15 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
   const ops = pendingOperations(100);
   const conflicts = listConflicts();
 
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [pwdBusy, setPwdBusy] = useState(false);
+  const [pwdError, setPwdError] = useState<string | null>(null);
+
   async function onManualSync() {
+    if (app.sync.authRequired) {
+      setPendingAction({ kind: 'reauth' });
+      return;
+    }
     app.scheduleSync(0);
   }
 
@@ -38,33 +51,85 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
     app.shareFullBackup().catch((e) => Alert.alert('Sauvegarde', e instanceof Error ? e.message : 'Échec.'));
   }
 
-  function onUpload() {
+  function onUploadRequest() {
     if (!app.online) {
       Alert.alert('Hors ligne', 'Le téléversement de la sauvegarde nécessite une connexion.');
       return;
     }
-    app.uploadBackup()
-      .then((file) => Alert.alert('Sauvegarde envoyée', `Stockée sur le serveur : ${file}`))
-      .catch((e) => Alert.alert('Téléversement', e instanceof Error ? e.message : 'Échec.'));
+    setPwdError(null);
+    setPendingAction({ kind: 'upload' });
+  }
+
+  async function handlePasswordConfirm(password: string) {
+    if (!password) {
+      setPwdError('Veuillez saisir votre mot de passe.');
+      return;
+    }
+    setPwdBusy(true);
+    setPwdError(null);
+    try {
+      if (pendingAction?.kind === 'upload') {
+        const file = await app.uploadBackupWithPassword(password);
+        setPendingAction(null);
+        Alert.alert('Sauvegarde envoyée', `Stockée sur le serveur : ${file}`);
+      } else if (pendingAction?.kind === 'force') {
+        await app.confirmPassword(password);
+        await app.resolveConflict(pendingAction.conflict.queue_id, false);
+        setPendingAction(null);
+        rerender();
+        Alert.alert('Conflit résolu', 'Votre version a été forcée sur le serveur (validation admin).');
+      } else if (pendingAction?.kind === 'reauth') {
+        await app.confirmPassword(password);
+        setPendingAction(null);
+        Alert.alert('Session renouvelée', 'Votre session a été renouvelée. La synchronisation va reprendre.');
+        app.scheduleSync(0);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Mot de passe incorrect ou erreur réseau.';
+      setPwdError(msg);
+    } finally {
+      setPwdBusy(false);
+    }
   }
 
   function onConflict(c: ConflictRecord, keepServer: boolean) {
-    const title = keepServer ? 'Conserver la version serveur' : 'Forcer ma version';
-    Alert.alert(title,
-      keepServer
-        ? `Votre version locale sera remplacée par celle du serveur (${ENTITY_LABEL[c.entity]} ${c.id.slice(0, 8)}…).`
-        : 'Votre version locale sera imposée au serveur. Action réservée aux administrateurs.',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Valider',
-          style: keepServer ? 'default' : 'destructive',
-          onPress: () => app.resolveConflict(c.queue_id, keepServer)
-            .catch((e) => Alert.alert('Conflit', e instanceof Error ? e.message : 'Échec.'))
-            .finally(rerender),
-        },
-      ]);
+    if (keepServer) {
+      const title = 'Conserver la version serveur';
+      Alert.alert(title,
+        `Votre version locale sera remplacée par celle du serveur (${ENTITY_LABEL[c.entity]} ${c.id.slice(0, 8)}…).`,
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Valider',
+            onPress: () => app.resolveConflict(c.queue_id, true)
+              .catch((e) => Alert.alert('Conflit', e instanceof Error ? e.message : 'Échec.'))
+              .finally(rerender),
+          },
+        ]);
+    } else {
+      // Forcer nécessite confirmation par mot de passe (action sensible admin)
+      setPwdError(null);
+      setPendingAction({ kind: 'force', conflict: c });
+    }
   }
+
+  const modalTitle =
+    pendingAction?.kind === 'upload'
+      ? 'Téléverser la sauvegarde'
+      : pendingAction?.kind === 'force'
+        ? 'Forcer ma version (admin)'
+        : pendingAction?.kind === 'reauth'
+          ? 'Session expirée'
+          : 'Confirmation requise';
+
+  const modalMessage =
+    pendingAction?.kind === 'upload'
+      ? 'Cette action téléverse vos données locales vers le serveur. Veuillez confirmer votre mot de passe pour autoriser le téléversement.'
+      : pendingAction?.kind === 'force'
+        ? `Vous allez imposer votre version locale pour ${ENTITY_LABEL[pendingAction.conflict.entity]} ${pendingAction.conflict.id.slice(0, 8)}… sur le serveur. Cette action sensible nécessite une confirmation par mot de passe.`
+        : pendingAction?.kind === 'reauth'
+          ? 'Votre session a expiré ou n’a pas pu être renouvelée automatiquement. Confirmez votre mot de passe pour renouveler la session et reprendre la synchronisation. Vos données locales sont conservées.'
+          : 'Veuillez confirmer votre mot de passe pour continuer.';
 
   return (
     <Screen
@@ -84,16 +149,16 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
       {app.sync.authRequired ? (
         <Card style={{ borderColor: colors.warning + '88' }}>
           <Text style={[textStyles.caption, { color: colors.warning, fontWeight: '700' }]}>
-            🔐 Session à renouveler
+            🔐 Session à renouveler — confirmation requise
           </Text>
           <Text style={[textStyles.caption, { marginTop: 4 }]}>
-            Votre session n'a pas pu être renouvelée pour l'instant (connexion instable ou accès
-            refusé) : la transmission est suspendue, mais rien n'est perdu — vos {app.sync.pendingCount} modification(s)
-            en attente et vos sauvegardes restent conservées sur cet appareil, et vous restez
-            connecté. La synchronisation reprendra automatiquement dès le retour du réseau, ou
-            touchez « Synchroniser maintenant ». Si le serveur refuse définitivement la session
-            (compte désactivé…), vous serez invité à vous reconnecter, sans perdre vos données.
+            Votre session a expiré ou n'a pas pu être renouvelée automatiquement. Vos {app.sync.pendingCount} modification(s)
+            en attente restent conservées localement. Touchez « Renouveler la session » et confirmez votre mot de passe pour
+            reprendre la synchronisation et autoriser les téléversements.
           </Text>
+          <View style={{ marginTop: 10 }}>
+            <Button small title="🔐 Renouveler la session (mot de passe)" onPress={() => { setPwdError(null); setPendingAction({ kind: 'reauth' }); }} />
+          </View>
         </Card>
       ) : null}
       {app.sync.lastError ? (
@@ -106,7 +171,7 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
         disabled={app.sync.syncing || !app.online} variant={app.online ? 'primary' : 'secondary'} />
       {app.sync.authRequired ? (
         <Text style={textStyles.caption}>
-          La synchronisation reprendra automatiquement dès votre reconnexion.
+          La synchronisation reprendra automatiquement après confirmation de votre mot de passe.
         </Text>
       ) : null}
 
@@ -140,15 +205,17 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
                 <Button small variant="secondary" title="Garder le serveur" onPress={() => onConflict(c, true)} />
                 <Button
                   small
-                  title="Forcer la mienne"
+                  title="Forcer la mienne 🔐"
                   variant="danger"
                   disabled={app.user?.role !== 'admin'}
                   onPress={() => onConflict(c, false)}
                 />
               </View>
               {app.user?.role !== 'admin' ? (
-                <Text style={textStyles.caption}>ⓘ Forcer est réservé aux administrateurs (validation).</Text>
-              ) : null}
+                <Text style={textStyles.caption}>ⓘ Forcer est réservé aux administrateurs (validation) et nécessite confirmation par mot de passe.</Text>
+              ) : (
+                <Text style={textStyles.caption}>ⓘ Cette action sensible nécessite une confirmation par mot de passe.</Text>
+              )}
             </Card>
           );
         })
@@ -209,19 +276,32 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
       </Card>
       <Button title="💾 Sauvegarde complète (JSON)" variant="secondary" onPress={onBackup} />
       <Button
-        title="☁️ Téléverser la sauvegarde sur le serveur"
+        title="☁️ Téléverser la sauvegarde sur le serveur 🔐"
         variant="secondary"
         disabled={!app.online}
-        onPress={onUpload}
+        onPress={onUploadRequest}
       />
       {!app.online ? (
         <Text style={textStyles.caption}>Téléversement indisponible hors ligne — la sauvegarde locale reste possible.</Text>
-      ) : null}
+      ) : (
+        <Text style={textStyles.caption}>Le téléversement nécessite une confirmation par mot de passe pour sécuriser vos données.</Text>
+      )}
 
       <Text style={[textStyles.caption, styles.foot]}>
         Stratégie de résolution : la modification la plus récente l’emporte (Last-Write-Wins) ;
-        en cas de doute, un administrateur peut forcer sa version (validation administrative).
+        en cas de doute, un administrateur peut forcer sa version (validation administrative) après confirmation par mot de passe.
       </Text>
+
+      <PasswordConfirmModal
+        visible={!!pendingAction}
+        title={modalTitle}
+        message={modalMessage}
+        confirmLabel={pendingAction?.kind === 'upload' ? 'Téléverser' : pendingAction?.kind === 'force' ? 'Forcer' : 'Renouveler'}
+        onConfirm={handlePasswordConfirm}
+        onCancel={() => { setPendingAction(null); setPwdError(null); }}
+        busy={pwdBusy}
+        error={pwdError}
+      />
     </Screen>
   );
 }

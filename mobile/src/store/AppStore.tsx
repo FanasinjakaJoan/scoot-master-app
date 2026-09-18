@@ -5,9 +5,15 @@ import { AppState, Platform } from 'react-native';
 import { useNetworkState } from 'expo-network';
 
 import { secureGet, secureSet, secureDelete } from '../lib/secureStorage';
-import { needsRefresh, jwtExpiresAt } from '../lib/jwt';
+import { needsRefresh, jwtExpiresAt, isTokenUnusable } from '../lib/jwt';
 
-import { login as apiLogin, refreshTokenSafe as apiRefreshSafe, updateMyProfile as apiUpdateMyProfile, ApiError } from '../data/api/client';
+import {
+  login as apiLogin,
+  refreshTokenSafe as apiRefreshSafe,
+  updateMyProfile as apiUpdateMyProfile,
+  confirmPassword as apiConfirmPassword,
+  ApiError,
+} from '../data/api/client';
 import * as repo from '../data/local/repositories';
 import {
   runSyncCycle, readSyncStatus, clearAuthSuspension, resolveConflictKeepServer, resolveConflictForceMine,
@@ -22,17 +28,16 @@ import type {
 } from '../types';
 
 /**
- * Store global de l'app : session permanente, réseau, moteur de synchronisation.
+ * Store global de l'app : session permanente + confirmation par mot de passe.
  *
- * NOUVELLE STRATÉGIE (session permanente) :
- * - La session ne prend fin QUE sur déconnexion explicite (bouton « Se déconnecter »).
- * - Un 401/403 pendant sync (push/pull) est traité comme une interruption réseau
- *   temporaire : on garde les données en attente et on re-tente au prochain cycle.
- * - Au démarrage, on valide uniquement la présence du jeton en local — pas de
- *   blocage si le serveur est injoignable ou refuse.
- * - Renouvellement silencieux en arrière-plan (jeton 1 an, keep-alive 15 min).
- * - Aucune suppression automatique du stockage local (SecureStore/localStorage)
- *   en dehors de logout().
+ * STRATÉGIE :
+ * - Session permanente : déconnexion uniquement explicite.
+ * - 401/403 pendant sync = interruption temporaire, file conservée.
+ * - Renouvellement silencieux en arrière-plan (jeton 30j/1an, keep-alive 15 min).
+ * - Si renouvellement impossible (jeton inutilisable, secret changé, base réinitialisée),
+ *   on signale authRequired pour inviter l'utilisateur à confirmer son mot de passe.
+ * - Actions sensibles (téléversement sauvegarde, gestion utilisateurs, forçage conflit)
+ *   nécessitent confirmation par mot de passe (principe sudo).
  */
 
 const TOKEN_KEY = 'sm_token';
@@ -40,7 +45,7 @@ const USER_KEY = 'sm_user';
 
 type RenewOutcome =
   | { status: 'renewed'; token: string }
-  | { status: 'unavailable' };
+  | { status: 'unavailable'; reason?: string };
 
 interface AppContextValue {
   user: User | null;
@@ -50,6 +55,8 @@ interface AppContextValue {
   doLogin: (username: string, password: string) => Promise<void>;
   doLogout: () => Promise<void>;
   sessionExpired: (reason?: string) => Promise<void>;
+  confirmPassword: (password: string) => Promise<void>;
+  reauthenticate: (password: string) => Promise<void>;
   updateProfile: (fullName: string, password?: string) => Promise<void>;
   sync: SyncStatus;
   scheduleSync: (delayMs?: number) => void;
@@ -66,6 +73,7 @@ interface AppContextValue {
   shareExport: (entity: 'bikes' | 'customers' | 'sales', format: 'json' | 'csv') => Promise<void>;
   shareFullBackup: () => Promise<void>;
   uploadBackup: () => Promise<string>;
+  uploadBackupWithPassword: (password: string) => Promise<string>;
   dataVersion: number;
   refresh: () => void;
 }
@@ -100,41 +108,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   userRef.current = user;
   onlineRef.current = online;
 
-  // ---- session permanente : plus d'expiration automatique ----
-  /**
-   * Ancienne fonction d'expiration automatique — désormais NO-OP pour respecter
-   * la règle « déconnexion explicite exclusive ». On garde la signature pour
-   * compatibilité mais on NE supprime PLUS le jeton. Seul doLogout() supprime.
-   * On affiche éventuellement une notice non bloquante.
-   */
   const sessionExpired = useCallback(async (reason?: string) => {
-    // Ne plus supprimer le stockage local — on garde l'utilisateur connecté.
-    // On se contente d'une notice informative si fournie, sans déconnecter.
     if (reason) {
       // eslint-disable-next-line no-console
       console.log('[Session] notice (non bloquante, session conservée):', reason);
     }
     setAuthNotice(null);
-    // On ne touche pas à token/user, on ne supprime pas SecureStore.
-    // Le sync reste en attente et retentera.
     setSync((s) => ({ ...s, syncing: false, authRequired: false }));
   }, []);
 
-  // ---- chargement de session au démarrage : uniquement présence locale ----
+  // ---- chargement de session au démarrage ----
   useEffect(() => {
     (async () => {
       try {
         const t = await secureGet(TOKEN_KEY);
         const u = await secureGet(USER_KEY);
         if (t && u) {
-          // Session permanente : on restaure dès que présent en local,
-          // sans vérifier auprès du serveur, sans bloquer si serveur injoignable.
           try {
             setToken(t);
             setUser(JSON.parse(u) as User);
           } catch {
-            // Données utilisateur corrompues : on garde quand même le token,
-            // l'utilisateur reste connecté, profil à recharger au prochain login.
             setToken(t);
           }
         }
@@ -161,12 +154,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setUser(nextUser);
   }, []);
 
-  // ---- renouvellement silencieux (toujours 200, jamais de déconnexion) ----
+  // ---- renouvellement silencieux ----
   const renewSession = useCallback(async (): Promise<RenewOutcome> => {
     if (renewInFlight.current) return renewInFlight.current;
     const run = (async (): Promise<RenewOutcome> => {
       const current = tokenRef.current || (await secureGet(TOKEN_KEY).catch(() => null));
-      if (!current || !onlineRef.current) return { status: 'unavailable' };
+      if (!current || !onlineRef.current) return { status: 'unavailable', reason: 'offline' };
+      if (isTokenUnusable(current)) {
+        // Jeton définitivement inutilisable : il faut une re-auth par mot de passe
+        return { status: 'unavailable', reason: 'unusable' };
+      }
       try {
         const res = await apiRefreshSafe(current);
         if (res.valid && res.token && res.user) {
@@ -178,12 +175,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }, res.expiresAt);
           return { status: 'renewed', token: res.token };
         }
-        // Même si valid:false (révoqué, expiré hors grâce, signature invalide),
-        // on GARDE l'utilisateur connecté en local — pas de déconnexion auto.
-        return { status: 'unavailable' };
+        return { status: 'unavailable', reason: res.reason || 'invalid' };
       } catch {
-        // Échec réseau / serveur en veille / 5xx : on garde la session.
-        return { status: 'unavailable' };
+        return { status: 'unavailable', reason: 'network' };
       }
     })();
     renewInFlight.current = run;
@@ -197,30 +191,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const sessionKeeper = useMemo<SyncSessionKeeper>(() => ({
     refreshSession: async () => {
       const r = await renewSession();
-      // Toujours traiter comme transitoire si non renouvelé — jamais de refus définitif.
       return r.status === 'renewed'
         ? { ok: true as const, token: r.token }
         : { ok: false as const, refused: false };
     },
   }), [renewSession]);
 
-  // ---- jeton : lecture locale + renouvellement silencieux non bloquant ----
   const ensureFreshToken = useCallback(async (): Promise<string | null> => {
     let current = tokenRef.current;
     try {
       const stored = await secureGet(TOKEN_KEY);
       if (stored) current = stored;
-    } catch { /* stockage indisponible : on tente l'état courant */ }
+    } catch { /* stockage indisponible */ }
     if (!current) return null;
 
-    // Renouvellement silencieux si proche de l'échéance — sans bloquer l'UI,
-    // sans déconnecter en cas d'échec.
     if (needsRefresh(current)) {
       if (!onlineRef.current) return current;
       const outcome = await renewSession();
       if (outcome.status === 'renewed') return outcome.token;
-      // Échec : on garde le jeton courant, l'utilisateur reste connecté.
-      return current;
+      // Si échec mais jeton encore utilisable, on garde l'ancien
+      if (!isTokenUnusable(current)) return current;
+      // Jeton inutilisable : on ne peut pas le renouveler silencieusement
+      return null;
     }
     return current;
   }, [renewSession]);
@@ -248,12 +240,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }, delayMs);
   }, []);
 
-  // ---- cycle de synchronisation : 401/403 = interruption temporaire, pas de déconnexion ----
   const doSync = useCallback(async () => {
     if (syncingRef.current || !onlineRef.current) return;
     const freshToken = await ensureFreshToken();
     if (!freshToken) {
-      setSync((s) => ({ ...s, syncing: false }));
+      // Pas de jeton frais : on signale qu'une confirmation par mot de passe est nécessaire
+      // si le jeton stocké est inutilisable, sinon simple interruption temporaire
+      const stored = tokenRef.current;
+      const needsAuth = stored ? isTokenUnusable(stored) : false;
+      setSync((s) => ({ ...s, syncing: false, authRequired: needsAuth, lastError: needsAuth ? 'Session expirée — confirmez votre mot de passe pour reprendre la synchronisation.' : null }));
       return;
     }
     syncingRef.current = true;
@@ -263,9 +258,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (outcome.pushed > 0 || outcome.pulled > 0) setDataVersion((v) => v + 1);
     setSync({ ...readSyncStatus(), syncing: false, authRequired: false });
     if (outcome.authRequired) {
-      // NOUVELLE RÈGLE : 401/403 pendant sync = interruption réseau temporaire.
-      // On garde les données en attente localement et on re-tente au prochain cycle.
-      // Pas de message "session expirée", pas de déconnexion, pas d'authRequired.
       scheduleSync(30000);
       return;
     }
@@ -309,7 +301,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [token, ensureFreshToken]);
 
-  // ---- session ----
+  // ---- session : login, confirmation par mot de passe ----
+
   const doLogin = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);
     const u: User = { id: res.user.id, username: res.user.username, fullName: res.user.fullName, role: res.user.role as User['role'] };
@@ -321,9 +314,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     void retryPendingBackupUpload();
   }, [scheduleSync, retryPendingBackupUpload, persistSession]);
 
+  /**
+   * Confirmation par mot de passe pour action sensible.
+   * Vérifie le mot de passe courant via /api/auth/confirm-password et
+   * renouvelle la session avec un jeton frais.
+   */
+  const confirmPassword = useCallback(async (password: string) => {
+    if (!password) throw new ApiError(400, 'Mot de passe requis.');
+    const current = tokenRef.current || (await secureGet(TOKEN_KEY).catch(() => null));
+    if (!current) throw new ApiError(401, 'Aucune session active — reconnectez-vous.');
+    // On tente d'abord avec le jeton courant (même expiré dans la grâce, le serveur l'accepte)
+    try {
+      const res = await apiConfirmPassword(current, password);
+      if (!res.token || !res.user) throw new ApiError(401, 'Mot de passe incorrect.');
+      const u: User = {
+        id: res.user.id,
+        username: res.user.username,
+        fullName: res.user.fullName,
+        role: res.user.role as User['role'],
+      };
+      await persistSession(res.token, u, res.expiresAt);
+      setAuthNotice(null);
+      clearAuthSuspension();
+      setSync(readSyncStatus());
+      return;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        // Mot de passe incorrect ou compte révoqué : on propage
+        throw e;
+      }
+      // Échec réseau ou autre : on tente un login complet si on a le username
+      const storedUser = userRef.current;
+      if (storedUser?.username) {
+        try {
+          const res = await apiLogin(storedUser.username, password);
+          const u: User = { id: res.user.id, username: res.user.username, fullName: res.user.fullName, role: res.user.role as User['role'] };
+          await persistSession(res.token, u, res.expiresAt);
+          setAuthNotice(null);
+          clearAuthSuspension();
+          setSync(readSyncStatus());
+          return;
+        } catch (loginErr) {
+          throw loginErr;
+        }
+      }
+      throw e;
+    }
+  }, [persistSession]);
+
+  /**
+   * Ré-authentification par mot de passe seul (re-login avec username stocké).
+   * Utile quand la session est expirée et que confirm-password ne suffit pas
+   * (ex: secret JWT changé, base réinitialisée).
+   */
+  const reauthenticate = useCallback(async (password: string) => {
+    const storedUser = userRef.current;
+    if (!storedUser?.username) throw new ApiError(401, 'Aucun utilisateur stocké — reconnectez-vous avec votre identifiant.');
+    const res = await apiLogin(storedUser.username, password);
+    const u: User = { id: res.user.id, username: res.user.username, fullName: res.user.fullName, role: res.user.role as User['role'] };
+    await persistSession(res.token, u, res.expiresAt);
+    setAuthNotice(null);
+    clearAuthSuspension();
+    setSync(readSyncStatus());
+    scheduleSync(500);
+    void retryPendingBackupUpload();
+  }, [persistSession, scheduleSync, retryPendingBackupUpload]);
+
   const updateProfile = useCallback(async (fullName: string, password?: string) => {
     const fresh = await ensureFreshToken();
-    if (!fresh || !userRef.current) throw new ApiError(401, 'Session expirée — reconnectez-vous.');
+    if (!fresh || !userRef.current) throw new ApiError(401, 'Session expirée — confirmez votre mot de passe.');
     const applyProfile = async (res: { user: { fullName: string } }) => {
       if (!userRef.current) return;
       const next: User = { ...userRef.current, fullName: res.user.fullName };
@@ -342,15 +401,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await applyProfile(res);
           return;
         }
-        // Échec même après tentative de refresh : on garde la session locale,
-        // on informe l'utilisateur que c'est une interruption temporaire.
-        throw new ApiError(e.status, 'Mise à jour en attente — connexion temporairement indisponible, réessayez.');
+        throw new ApiError(e.status, 'Session expirée — confirmez votre mot de passe pour continuer.');
       }
       throw e;
     }
   }, [ensureFreshToken, renewSession]);
 
-  /** Déconnexion volontaire : SEUL cas où la session est fermée côté client. */
   const doLogout = useCallback(async () => {
     await secureDelete(TOKEN_KEY);
     await secureDelete(USER_KEY);
@@ -421,7 +477,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } else {
       if (!onlineRef.current) throw new ApiError(0, 'Connexion requise pour forcer.');
       const fresh = await ensureFreshToken();
-      if (!fresh) throw new ApiError(401, 'Session expirée — reconnectez-vous.');
+      if (!fresh) throw new ApiError(401, 'Session expirée — confirmez votre mot de passe pour forcer.');
       await resolveConflictForceMine(fresh, deviceIdRef.current, queueId, user as User, sessionKeeper);
     }
     refresh();
@@ -470,31 +526,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const uploadBackup = useCallback(async () => {
     const fresh = await ensureFreshToken();
-    if (!fresh) throw new ApiError(401, 'Session expirée — reconnectez-vous : la sauvegarde sera re-téléversée automatiquement après.');
+    if (!fresh) throw new ApiError(401, 'Session expirée — confirmez votre mot de passe pour téléverser.');
     try {
       const spec = localBackupSpec();
       return await uploadLocalBackup(fresh, spec.fileName, sessionKeeper);
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        throw new ApiError(e.status, 'Sauvegarde en attente — interruption temporaire, réessai automatique.');
+        throw new ApiError(e.status, 'Session expirée — confirmez votre mot de passe pour téléverser la sauvegarde.');
       }
       throw e;
     }
   }, [ensureFreshToken, sessionKeeper]);
 
+  const uploadBackupWithPassword = useCallback(async (password: string) => {
+    // 1) Confirmer le mot de passe et renouveler la session
+    await confirmPassword(password);
+    // 2) Téléverser avec le nouveau jeton frais
+    const fresh = await ensureFreshToken();
+    if (!fresh) throw new ApiError(401, 'Session expirée après confirmation — réessayez.');
+    const spec = localBackupSpec();
+    return await uploadLocalBackup(fresh, spec.fileName, sessionKeeper);
+  }, [confirmPassword, ensureFreshToken, sessionKeeper]);
+
   const value = useMemo<AppContextValue>(() => ({
     user, token, online, authNotice,
-    doLogin, doLogout, sessionExpired, updateProfile,
+    doLogin, doLogout, sessionExpired, confirmPassword, reauthenticate, updateProfile,
     sync, scheduleSync,
     resolveConflict, retryFailed,
     saveBike, patchBike, deleteBike,
     saveCustomer, deleteCustomer,
     saveSale, patchSaleStatus, deleteSale,
-    shareExport, shareFullBackup, uploadBackup,
+    shareExport, shareFullBackup, uploadBackup, uploadBackupWithPassword,
     dataVersion, refresh,
-  }), [user, token, online, authNotice, doLogin, doLogout, sessionExpired, updateProfile, sync, scheduleSync, resolveConflict, retryFailed,
+  }), [user, token, online, authNotice, doLogin, doLogout, sessionExpired, confirmPassword, reauthenticate, updateProfile, sync, scheduleSync, resolveConflict, retryFailed,
     saveBike, patchBike, deleteBike, saveCustomer, deleteCustomer, saveSale, patchSaleStatus,
-    deleteSale, shareExport, shareFullBackup, uploadBackup, dataVersion, refresh]);
+    deleteSale, shareExport, shareFullBackup, uploadBackup, uploadBackupWithPassword, dataVersion, refresh]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

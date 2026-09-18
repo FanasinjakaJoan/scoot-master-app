@@ -39,6 +39,8 @@ function createApp(db) {
       ['POST', '/api/auth/login', 'Connexion → JWT  {username, password}'],
       ['POST', '/api/auth/check', 'Validation session SANS 401 (toujours 200) — évite le log navigateur au chargement'],
       ['POST', '/api/auth/refresh-safe', 'Renouvellement SANS 401 (toujours 200) — keep-alive / maintien pendant sync'],
+      ['POST', '/api/auth/confirm-password', 'Confirmation mot de passe + renouvellement session (auth, accepte expiré dans grâce)'],
+      ['POST', '/api/auth/verify-password', 'Vérification simple mot de passe (auth)'],
       ['GET', '/api/auth/me', 'Profil utilisateur (auth)'],
       ['GET', '/api/bikes', 'Catalogue (filtres: status, brand, q, minPrice, maxPrice, sort, order) (auth)'],
       ['GET', '/api/bikes/meta', 'Marques & statuts (auth)'],

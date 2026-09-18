@@ -124,6 +124,23 @@ export function refreshTokenSafe(token: string): Promise<CheckSessionResponse> {
   return apiCall<CheckSessionResponse>(token, 'POST', '/api/auth/refresh-safe');
 }
 
+/**
+ * Confirmation par mot de passe pour actions sensibles.
+ * Vérifie le mot de passe courant et délivre un nouveau jeton frais.
+ * Permet de débloquer une session expirée ou d'autoriser une action
+ * sensible après re-saisie du mot de passe (principe sudo).
+ */
+export function confirmPassword(token: string, password: string): Promise<SessionResponse & { valid: boolean }> {
+  return apiCall<SessionResponse & { valid: boolean }>(token, 'POST', '/api/auth/confirm-password', { password });
+}
+
+/**
+ * Vérification simple du mot de passe sans renouvellement de session.
+ */
+export function verifyPassword(token: string, password: string): Promise<{ valid: boolean }> {
+  return apiCall<{ valid: boolean }>(token, 'POST', '/api/auth/verify-password', { password });
+}
+
 // ---------------------------------------------------------------------
 // Synchronisation
 // ---------------------------------------------------------------------

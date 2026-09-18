@@ -3,20 +3,25 @@ import { Image, StyleSheet, Text, View } from 'react-native';
 import { Alert } from '../lib/alert';
 import { colors, textStyles } from '../theme';
 import { useApp } from '../store/AppStore';
-import { bikeById, listSales, listBikes } from '../data/local/repositories';
+import { bikeById, listSales } from '../data/local/repositories';
 import { Screen, Card } from '../components/Screen';
 import { Badge, BIKE_BADGES } from '../components/Badge';
 import { Button, Row } from '../components/Buttons';
+import { PasswordConfirmModal } from '../components/PasswordConfirmModal';
 import { EmptyState } from '../components/EmptyState';
 import { formatKm, formatMoney, timeAgo } from '../lib/format';
 import { STATE_LABELS } from '../types';
 import type { NavigatorProp } from '../navigation/types';
 
 export function BikeDetailScreen({ navigation, route }: NavigatorProp<'BikeDetail'>) {
-  const { dataVersion, patchBike, deleteBike, user } = useApp();
+  const { dataVersion, patchBike, deleteBike, confirmPassword, user } = useApp();
   const id = route.params.id;
   const [bike, setBike] = useState(bikeById(id));
   const [sales, setSales] = useState(() => listSales({ limit: 100 }));
+
+  const [showPwd, setShowPwd] = useState(false);
+  const [pwdBusy, setPwdBusy] = useState(false);
+  const [pwdError, setPwdError] = useState<string | null>(null);
 
   useEffect(() => {
     setBike(bikeById(id));
@@ -35,11 +40,25 @@ export function BikeDetailScreen({ navigation, route }: NavigatorProp<'BikeDetai
   const relatedSales = sales.filter((s) => (s.items || []).some((it) => it.bike_id === id));
 
   const confirmDelete = () => {
-    Alert.alert('Supprimer cette moto ?', `${bike.brand} ${bike.model} sera supprimée (suppression logique, synchronisée).`, [
-      { text: 'Annuler', style: 'cancel' },
-      { text: 'Supprimer', style: 'destructive', onPress: () => { deleteBike(id); navigation.goBack(); } },
-    ]);
+    setPwdError(null);
+    setShowPwd(true);
   };
+
+  async function handlePasswordConfirm(pwd: string) {
+    if (!pwd) { setPwdError('Mot de passe requis.'); return; }
+    setPwdBusy(true);
+    setPwdError(null);
+    try {
+      await confirmPassword(pwd);
+      deleteBike(id);
+      setShowPwd(false);
+      navigation.goBack();
+    } catch (e) {
+      setPwdError(e instanceof Error ? e.message : 'Mot de passe incorrect.');
+    } finally {
+      setPwdBusy(false);
+    }
+  }
 
   const changeStatus = (next: string) => {
     if (next === bike.status) return;
@@ -116,9 +135,20 @@ export function BikeDetailScreen({ navigation, route }: NavigatorProp<'BikeDetai
       <Row gap={10}>
         <Button title="Modifier" variant="secondary" onPress={() => navigation.navigate('BikeForm', { id: bike.id })} />
         {user?.role === 'admin' ? (
-          <Button title="Supprimer" variant="danger" onPress={confirmDelete} />
+          <Button title="Supprimer 🔐" variant="danger" onPress={confirmDelete} />
         ) : null}
       </Row>
+
+      <PasswordConfirmModal
+        visible={showPwd}
+        title="Supprimer cette moto"
+        message={`${bike.brand} ${bike.model} sera supprimée (suppression logique, synchronisée). Cette action sensible nécessite une confirmation par mot de passe.`}
+        confirmLabel="Supprimer"
+        onConfirm={handlePasswordConfirm}
+        onCancel={() => { setShowPwd(false); setPwdError(null); }}
+        busy={pwdBusy}
+        error={pwdError}
+      />
     </Screen>
   );
 }

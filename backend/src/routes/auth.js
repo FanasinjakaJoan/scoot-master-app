@@ -152,5 +152,59 @@ module.exports = function authRoutes(db) {
     res.json({ valid: true, ...sessionPayload(result.userRow) });
   });
 
+  /**
+   * POST /api/auth/confirm-password — confirmation par mot de passe pour
+   * les actions sensibles (téléversement, gestion utilisateurs, etc.).
+   *
+   * Le client envoie son mot de passe courant ; si valide, le serveur
+   * délivre un nouveau jeton frais (session renouvelée). Cela permet :
+   * - de débloquer une session expirée sans ressaisir l'identifiant ;
+   * - d'autoriser explicitement une action sensible après re-saisie du
+   *   mot de passe (principe « sudo »).
+   *
+   * Accepte un jeton expiré dans la grâce (requireAuthAllowExpired) pour
+   * permettre la reconnexion par mot de passe même après expiration.
+   *
+   * Body: { password: string }
+   * Réponses:
+   * - 200 { valid: true, token, expiresAt, user }
+   * - 400 si mot de passe manquant
+   * - 401 si mot de passe incorrect ou compte révoqué
+   */
+  r.post('/confirm-password', requireAuthAllowExpired, (req, res) => {
+    const { password } = req.body || {};
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Mot de passe requis.' });
+    }
+    const row = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(req.user.id);
+    if (!row) {
+      return res.status(401).json({ error: 'Compte supprimé ou désactivé — reconnexion requise.', revoked: true });
+    }
+    if (!bcrypt.compareSync(String(password), row.password_hash)) {
+      return res.status(401).json({ error: 'Mot de passe incorrect.' });
+    }
+    res.json({ valid: true, ...sessionPayload(row) });
+  });
+
+  /**
+   * POST /api/auth/verify-password — variante légère qui ne délivre PAS de
+   * nouveau jeton, seulement { valid: true } si le mot de passe est correct.
+   * Utile pour une simple vérification sans renouveler la session.
+   */
+  r.post('/verify-password', requireAuthAllowExpired, (req, res) => {
+    const { password } = req.body || {};
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Mot de passe requis.' });
+    }
+    const row = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(req.user.id);
+    if (!row) {
+      return res.status(401).json({ error: 'Compte supprimé ou désactivé.', revoked: true });
+    }
+    if (!bcrypt.compareSync(String(password), row.password_hash)) {
+      return res.status(401).json({ error: 'Mot de passe incorrect.', valid: false });
+    }
+    res.json({ valid: true });
+  });
+
   return r;
 };

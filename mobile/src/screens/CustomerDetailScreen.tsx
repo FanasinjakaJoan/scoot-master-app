@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { Alert } from '../lib/alert';
 import { colors, textStyles } from '../theme';
 import { useApp } from '../store/AppStore';
 import { customerById, customerSalesStats, listSales } from '../data/local/repositories';
@@ -8,14 +7,19 @@ import { Screen, Card } from '../components/Screen';
 import { EmptyState } from '../components/EmptyState';
 import { SaleCard } from '../components/SaleCard';
 import { Button, Row } from '../components/Buttons';
+import { PasswordConfirmModal } from '../components/PasswordConfirmModal';
 import { formatMoney, timeAgo } from '../lib/format';
 import type { NavigatorProp } from '../navigation/types';
 
 export function CustomerDetailScreen({ navigation, route }: NavigatorProp<'CustomerDetail'>) {
-  const { dataVersion, deleteCustomer, user } = useApp();
+  const { dataVersion, deleteCustomer, confirmPassword, user } = useApp();
   const id = route.params.id;
   const [customer, setCustomer] = useState(customerById(id));
   const [purchases, setPurchases] = useState(listSales({ customerId: id, limit: 100 }));
+
+  const [showPwd, setShowPwd] = useState(false);
+  const [pwdBusy, setPwdBusy] = useState(false);
+  const [pwdError, setPwdError] = useState<string | null>(null);
 
   useEffect(() => {
     setCustomer(customerById(id));
@@ -33,11 +37,25 @@ export function CustomerDetailScreen({ navigation, route }: NavigatorProp<'Custo
   const stats = customerSalesStats(id);
 
   const confirmDelete = () => {
-    Alert.alert('Supprimer ce client ?', `${customer.first_name} ${customer.last_name} sera supprimé (les ventes sont conservées).`, [
-      { text: 'Annuler', style: 'cancel' },
-      { text: 'Supprimer', style: 'destructive', onPress: () => { deleteCustomer(id); navigation.goBack(); } },
-    ]);
+    setPwdError(null);
+    setShowPwd(true);
   };
+
+  async function handlePasswordConfirm(pwd: string) {
+    if (!pwd) { setPwdError('Mot de passe requis.'); return; }
+    setPwdBusy(true);
+    setPwdError(null);
+    try {
+      await confirmPassword(pwd);
+      deleteCustomer(id);
+      setShowPwd(false);
+      navigation.goBack();
+    } catch (e) {
+      setPwdError(e instanceof Error ? e.message : 'Mot de passe incorrect.');
+    } finally {
+      setPwdBusy(false);
+    }
+  }
 
   return (
     <Screen
@@ -76,9 +94,20 @@ export function CustomerDetailScreen({ navigation, route }: NavigatorProp<'Custo
       <Row gap={10}>
         <Button title="Modifier" variant="secondary" onPress={() => navigation.navigate('CustomerForm', { id: customer.id })} />
         {user?.role === 'admin' ? (
-          <Button title="Supprimer" variant="danger" onPress={confirmDelete} />
+          <Button title="Supprimer 🔐" variant="danger" onPress={confirmDelete} />
         ) : null}
       </Row>
+
+      <PasswordConfirmModal
+        visible={showPwd}
+        title="Supprimer ce client"
+        message={`${customer.first_name} ${customer.last_name} sera supprimé (les ventes sont conservées). Cette action sensible nécessite une confirmation par mot de passe.`}
+        confirmLabel="Supprimer"
+        onConfirm={handlePasswordConfirm}
+        onCancel={() => { setShowPwd(false); setPwdError(null); }}
+        busy={pwdBusy}
+        error={pwdError}
+      />
     </Screen>
   );
 }
