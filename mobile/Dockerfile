@@ -32,7 +32,8 @@ COPY deploy/web-server.js ./deploy/web-server.js
 USER scoot
 
 EXPOSE 8080
+# Render injecte PORT=10000 — healthcheck compatible avec $PORT ou 8080 en local.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1
+  CMD sh -c 'wget -qO- http://127.0.0.1:${PORT:-8080}/ >/dev/null || exit 1'
 
 CMD ["node", "deploy/web-server.js"]

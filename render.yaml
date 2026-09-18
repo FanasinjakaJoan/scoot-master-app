@@ -1,28 +1,69 @@
+# Scoot Master — Blueprint Render (Infrastructure as Code)
+# Documentation complète : docs/RENDER.md
+#
+# Architecture :
+#   - scoot-master-api : API Express + SQLite persistant (disk)
+#   - scoot-master-web : App web Expo (build statique) + proxy /api → API via réseau privé Render
+#
+# Déploiement :
+#   1. Fork/clone ce dépôt sur GitHub
+#   2. Sur https://dashboard.render.com → New + → Blueprint → sélectionner le dépôt
+#   3. Render détecte ce render.yaml et crée les 2 services
+#   4. Renseigner les variables secrètes si demandées (JWT_SECRET est auto-généré)
+#   5. Premier déploiement : SEED_ON_START=true pour créer admin/vendeur + 10 motos de démo
+#
+# Notes Render :
+#   - Chaque web service doit écouter sur $PORT (Render injecte 10000 par défaut)
+#   - Le healthCheckPath est vérifié par Render sur ce $PORT
+#   - Le réseau privé est gratuit et chiffré : les services se joignent via <nom-service>:<port>
+#   - Le disque persistant nécessite un plan Starter minimum (pas Free pour les disks)
+#   - EXPO_PUBLIC_API_URL="" (vide) dans mobile/Dockerfile ⇒ l'app web appelle /api en relatif,
+#     le serveur web (deploy/web-server.js) relaie vers l'API — pas de CORS, HTTPS transparent.
+
 services:
   - type: web
     name: scoot-master-api
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
+    plan: starter # requis pour les disks persistants (Free ne supporte pas les disks)
     healthCheckPath: /api/health
+    # autoDeploy: true par défaut — chaque push sur la branche suivie redéploie
     envVars:
       - key: NODE_ENV
         value: production
+      # Render injecte PORT=10000 automatiquement. On ne le force pas ici :
+      # backend/src/config.js lit process.env.PORT et écoute dessus.
+      # Si vous voulez forcer 4000 en local, laissez le Dockerfile gérer le fallback.
       - key: JWT_SECRET
-        generateValue: true
+        generateValue: true # Render génère une chaîne aléatoire sécurisée
       - key: SEED_ON_START
-        value: "false"
+        value: "true" # idempotent : ne sème que si la base est vide (admin/admin123, vendeur/vendeur123)
+      - key: CORS_ORIGIN
+        value: "*" # en prod, remplacez par l'URL du frontend : https://scoot-master-web.onrender.com
+      - key: DB_PATH
+        value: /app/data/scoot.db # chemin sur le disque persistant
     disk:
       name: scoot-master-data
-      mountPath: /app/data
-      sizeGB: 1
+      mountPath: /app/data # correspond à DB_PATH parent
+      sizeGB: 1 # minimum facturable, suffisant pour SQLite (quelques Go de motos/ventes)
 
   - type: web
     name: scoot-master-web
     runtime: docker
     dockerfilePath: ./mobile/Dockerfile
-    dockerContext: .
+    dockerContext: . # contexte racine car le Dockerfile copie deploy/web-server.js
+    plan: starter # ou free si vous n'avez pas besoin de perf, mais starter recommandé
+    healthCheckPath: / # le serveur web sert index.html
     envVars:
-      # Communication privée Render entre le frontend et l'API.
+      # Réseau privé Render : on injecte automatiquement host:port de l'API
+      # Exemple résolu : scoot-master-api:10000
+      # deploy/web-server.js normalise en http://scoot-master-api:10000
       - key: API_TARGET
-        value: http://scoot-master-api:4000
+        fromService:
+          type: web
+          name: scoot-master-api
+          property: hostport
+      # Optionnel : si vous préférez hardcoder (moins robuste) :
+      # - key: API_TARGET
+      #   value: http://scoot-master-api:10000
