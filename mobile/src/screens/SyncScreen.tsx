@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { Alert } from '../lib/alert';
 import { StatusBar } from 'expo-status-bar';
 import { colors, textStyles } from '../theme';
 import { useApp } from '../store/AppStore';

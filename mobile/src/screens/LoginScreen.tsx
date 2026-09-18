@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
-  Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
+import { Alert } from '../lib/alert';
 import { colors, radius, textStyles } from '../theme';
 import { Button } from '../components/Buttons';
 import { useApp } from '../store/AppStore';

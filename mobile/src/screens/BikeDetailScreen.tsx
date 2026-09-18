@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Image, StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
+import { Alert } from '../lib/alert';
 import { colors, textStyles } from '../theme';
 import { useApp } from '../store/AppStore';
 import { bikeById, listSales, listBikes } from '../data/local/repositories';

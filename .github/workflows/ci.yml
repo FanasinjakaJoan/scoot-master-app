@@ -71,10 +71,57 @@ jobs:
       - name: Tests unitaires
         run: npx jest --ci
 
+  web-render:
+    name: 💨 Rendu de l'app web (build + smoke test en DOM simulé)
+    runs-on: ubuntu-latest
+    needs: [mobile-tests]
+    env:
+      CI: 1
+      EXPO_NO_TELEMETRY: 1
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            backend/package-lock.json
+      - name: Dépendances (app + API de démo)
+        run: |
+          npm ci
+          (cd ../backend && npm ci)
+      - name: Build web (expo export — détecte imports et assets cassés)
+        run: npm run build:web
+      - name: API + serveur web, puis vérification du rendu réel
+        run: |
+          SEED_ON_START=true node ../backend/src/server.js > /tmp/api.log 2>&1 &
+          API_PID=$!
+          PORT=8080 WEB_ROOT=mobile/dist node ../deploy/web-server.js > /tmp/web.log 2>&1 &
+          WEB_PID=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4000/api/health >/dev/null && \
+              curl -sf http://127.0.0.1:8080/ >/dev/null && break
+            sleep 1
+          done
+          status=0
+          # 1) l'écran de connexion doit se rendre sans erreur runtime
+          node scripts/web-smoke.mjs || status=1
+          # 2) connexion + sync + accueil + navigation + écriture de formulaire
+          node scripts/web-smoke.mjs --login admin admin123 --write --wait 40000 || status=1
+          kill $API_PID $WEB_PID 2>/dev/null || true
+          exit $status
+      - name: Journaux des serveurs (si échec)
+        if: failure()
+        run: cat /tmp/api.log /tmp/web.log
+
   docker-build:
     name: 🐳 Build des images Docker
     runs-on: ubuntu-latest
-    needs: [backend-tests, mobile-tests]
+    needs: [backend-tests, mobile-tests, web-render]
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3

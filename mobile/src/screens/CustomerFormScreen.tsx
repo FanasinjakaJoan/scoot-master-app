@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Alert, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
+import { Alert } from '../lib/alert';
 import { textStyles } from '../theme';
 import { useApp, newEntityId } from '../store/AppStore';
 import { customerById } from '../data/local/repositories';

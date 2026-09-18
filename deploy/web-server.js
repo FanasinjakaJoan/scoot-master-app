@@ -54,10 +54,15 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-/** En-têtes requis par SharedArrayBuffer (wa-sqlite / OPFS côté navigateur). */
+/** En-têtes de sécurité des réponses statiques.
+ *
+ * L'app web n'a plus besoin d'un contexte « crossOriginIsolated » (COOP/COEP) :
+ * sa base SQLite tourne sur le thread principal (src/data/local/db.web.ts) et
+ * non plus dans un Worker + SharedArrayBuffer. Ces en-têtes, qui cassaient
+ * l'aperçu intégré (iframe non isolée ⇒ SharedArrayBuffer indisponible ⇒ page
+ * blanche), sont donc supprimés.
+ */
 function securityHeaders(res) {
-  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
