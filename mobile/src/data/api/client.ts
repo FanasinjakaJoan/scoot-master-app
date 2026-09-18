@@ -110,3 +110,8 @@ export function uploadBackup(token: string, fileName: string, data: unknown): Pr
 export function serverStatus(token: string): Promise<{ ok: boolean; service: string; time: string }> {
   return apiCall<{ ok: boolean; service: string; time: string }>(token ?? '', 'GET', '/api/health');
 }
+
+export type ManagedUser = { id: string; username: string; fullName: string; role: 'admin' | 'seller'; active: boolean };
+export function listUsers(token: string) { return apiCall<{ users: ManagedUser[] }>(token, 'GET', '/api/users'); }
+export function createUser(token: string, body: { username: string; fullName: string; password: string; role: 'admin' | 'seller' }) { return apiCall<{ user: ManagedUser }>(token, 'POST', '/api/users', body); }
+export function updateUser(token: string, id: string, body: Partial<{ fullName: string; password: string; role: 'admin' | 'seller'; active: boolean }>) { return apiCall<{ ok: boolean }>(token, 'PATCH', `/api/users/${id}`, body); }

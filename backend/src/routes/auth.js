@@ -28,6 +28,8 @@ module.exports = function authRoutes(db) {
     });
   });
 
+  r.post('/logout', requireAuth, (req, res) => res.status(204).send());
+
   /** GET /api/auth/me — profil de l'utilisateur courant. */
   r.get('/me', requireAuth, (req, res) => {
     res.json({ user: req.user });

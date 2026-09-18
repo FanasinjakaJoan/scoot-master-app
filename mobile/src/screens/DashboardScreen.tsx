@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, textStyles } from '../theme';
 import { useApp, useDashboard, useSales } from '../store/AppStore';
@@ -20,7 +20,10 @@ export function DashboardScreen({ navigation }: NavigatorProp<'Dashboard'>) {
     <View style={styles.root}>
       <StatusBar style="dark" />
       <View style={styles.header}>
-        <Text style={textStyles.h1}>Bonjour, {app.user?.fullName?.split(' ')[0] || ' '} 👋</Text>
+        <View style={styles.headerRow}>
+          <Text style={textStyles.h1}>Bonjour, {app.user?.fullName?.split(' ')[0] || ' '} 👋</Text>
+          <View style={styles.headerActions}><Pressable accessibilityRole="button" onPress={() => navigation.navigate('UserManagement')} style={styles.profile}><Text style={styles.profileText}>Profil{app.user?.role === 'admin' ? ' / Utilisateurs' : ''}</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void app.doLogout()} style={styles.logout}><Text style={styles.logoutText}>Déconnexion</Text></Pressable></View>
+        </View>
         <Text style={textStyles.caption}>
           {timeAgo(app.sync.lastSyncAt)} · {app.user?.role === 'admin' ? 'Administrateur' : 'Vendeur'}
         </Text>
@@ -82,6 +85,12 @@ function StatCard({ icon, label, value, onPress }: { icon: string; label: string
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
+  headerActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  profile: { paddingHorizontal: 8, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.primarySoft },
+  profileText: { color: colors.primaryDark, fontSize: 11, fontWeight: '700' },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  logout: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.danger },
+  logoutText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   header: {
     paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10,
     backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,

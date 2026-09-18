@@ -56,7 +56,7 @@ export function LoginScreen() {
           <TextInput
             value={username}
             onChangeText={setUsername}
-            placeholder="ex. admin"
+            placeholder="Votre identifiant"
             placeholderTextColor={colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -74,11 +74,6 @@ export function LoginScreen() {
           />
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Button title={busy ? 'Connexion…' : 'Se connecter'} onPress={submit} disabled={busy} />
-          <View style={styles.demo}>
-            <Text style={styles.demoText}>
-              Comptes de démo : <Text style={styles.demoStrong}>admin / admin123</Text> · <Text style={styles.demoStrong}>vendeur / vendeur123</Text>
-            </Text>
-          </View>
         </View>
 
         {/* Raccourci d'installation : APK Android ou application de bureau */}
@@ -105,10 +100,4 @@ const styles = StyleSheet.create({
     marginBottom: 8, backgroundColor: colors.background,
   },
   error: { color: colors.danger, fontSize: 13, marginBottom: 6 },
-  demo: {
-    marginTop: 12, backgroundColor: colors.infoSoft, borderRadius: radius.md,
-    padding: 10, borderWidth: 1, borderColor: colors.info + '33',
-  },
-  demoText: { fontSize: 12, color: colors.textMuted },
-  demoStrong: { fontWeight: '700', color: colors.text },
 });
