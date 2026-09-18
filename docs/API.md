@@ -18,10 +18,32 @@ Légende : 🔓 public · 🔑 connecté · 👑 admin.
 |---|---|---|---|
 | POST | `/api/auth/login` | 🔓 | `{username, password}` → `{token, expiresAt, expiresIn, user{id, username, fullName, role}}` — 401 si identifiants erronés. `expiresAt` (epoch ms, calculé par le serveur) permet au client de renouveler sans dépendre de l'horloge de l'appareil |
 | GET | `/api/auth/me` | 🔑 | → `{user}` (profil courant) |
-| POST | `/api/auth/refresh` | 🔑 | Renouvelle le jeton (glissement de session) : re-vérifie en base que le compte existe et reste actif → `{token, expiresAt, expiresIn, user}`. Accepte aussi un jeton **récemment expiré** (fenêtre `JWT_REFRESH_GRACE`, 60 j par défaut) afin qu'un appareil resté hors ligne retrouve sa session. 401 JSON si jeton mal signé, expiré hors tolérance, ou compte supprimé/désactivé — le client déclenche alors la réauthentification **sans purger sa file locale** |
+| POST | `/api/auth/refresh` | 🔑 | Renouvelle le jeton (glissement de session) : re-vérifie en base que le compte existe et reste actif → `{token, expiresAt, expiresIn, user}`. Accepte aussi un jeton **récemment expiré** (fenêtre `JWT_REFRESH_GRACE`, 60 j par défaut) afin qu'un appareil resté hors ligne retrouve sa session. 401 JSON si jeton mal signé, expiré hors tolérance, ou compte supprimé/désactivé — le client déclenche alors la réauthentification **sans purger sa file locale**. Pour éviter le log navigateur « Failed to load resource: 401 » au chargement, préférer `POST /api/auth/check` ou `POST /api/auth/refresh-safe` (toujours 200) |
+| POST | `/api/auth/check` | 🔓 | **Validation sans 401** : toujours 200. Accepte `Authorization: Bearer <token>` (ou `{token}`) → `{valid:true, token, expiresAt, expiresIn, user}` si session maintenue, ou `{valid:false, error, revoked?, expired?, reason}` si jeton invalide/révoqué/expiré hors grâce. Utilisé au **chargement de l'app** pour valider une session restaurée du stockage sans provoquer de 401 dans la console navigateur |
+| POST | `/api/auth/refresh-safe` | 🔓 | **Renouvellement sans 401** : même sémantique que `/check` mais destiné aux renouvellements en arrière-plan (keep-alive, retour au premier plan, maintien pendant la synchro) — toujours 200, jamais 401, donc zéro bruit console |
+| GET | `/api/auth/check` | 🔓 | Alias GET de `POST /api/auth/check` (même sémantique, toujours 200) |
 
 Toutes les réponses d'erreur sont JSON explicites : `{"error":"Authentification requise."}`,
 `{"error":"Jeton invalide ou expiré."}`, `{"error":"Droits insuffisants (rôle requis : admin)."}`…
+
+### Sémantique des 401
+
+Un 401 porte toujours un drapeau qui dit au client quoi faire — c'est ce qui
+permet à l'app de ne jamais déconnecter à tort :
+
+| Réponse | Cause | Action du client |
+|---|---|---|
+| `{"error":"Session expirée — renouvellement requis.","expired":true}` | Jeton valide mais dépassé (`exp`) | `POST /api/auth/refresh` puis rejeu de la requête |
+| `{"error":"Compte supprimé ou désactivé — reconnexion requise.","revoked":true}` | Le compte du jeton n'existe plus ou est désactivé | Réauthentification (fin de session définitive) |
+| `{"error":"Jeton invalide ou expiré."}` | Signature refusée (secret changé, jeton forgé) | Réauthentification |
+| `{"error":"Authentification requise."}` | En-tête `Authorization` absent | Connexion |
+
+**Révocation effective sur toutes les routes.** Le compte désigné par le jeton
+est relu en base à **chaque** requête protégée : un compte supprimé ou
+désactivé perd l'accès immédiatement (et pas seulement au prochain
+renouvellement), et le rôle utilisé pour les autorisations est celui de la
+base — un jeton revendiquant `role: "admin"` sans l'être obtient un 403, pas
+les droits admin. La réactivation d'un compte rend l'accès sans reconnexion.
 
 ## Utilisateurs (gestion des comptes)
 
@@ -89,7 +111,7 @@ Toutes les réponses d'erreur sont JSON explicites : `{"error":"Authentification
 | Code | Signification |
 |---|---|
 | 400 | Corps invalide / champ manquant / limite dépassée |
-| 401 | Non authentifié (jeton absent/invalide/expiré) |
+| 401 | Non authentifié : jeton absent, invalide, expiré (`expired:true`) ou compte révoqué (`revoked:true`) — voir « Sémantique des 401 » |
 | 403 | Rôle insuffisant (ex. suppression par un `seller`, `force` non admin) |
 | 404 | Entité introuvable (ou supprimée) |
 | 500 | Erreur interne (journalisée côté serveur) |

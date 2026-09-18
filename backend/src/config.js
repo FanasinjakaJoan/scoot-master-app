@@ -35,24 +35,25 @@ function ttlToSeconds(value, fallback) {
 }
 
 // Durée de vie du jeton de session.
-// La session doit rester ouverte tant que l'utilisateur ne se déconnecte pas
-// lui-même : on retient une durée longue (30 jours par défaut), complétée par
-// le renouvellement glissant (POST /api/auth/refresh) déclenché par l'app.
-const JWT_TTL = process.env.JWT_TTL || '30d';
+// Nouvelle stratégie « session permanente » : jeton de très longue durée
+// (1 an par défaut, surchargeable via JWT_TTL) + renouvellement silencieux
+// en arrière-plan. La session ne prend fin QUE sur déconnexion explicite
+// côté client — jamais automatiquement sur 401/403.
+const JWT_TTL = process.env.JWT_TTL || '1y';
 
 // Fenêtre de tolérance pendant laquelle un jeton déjà expiré reste acceptable
 // pour un *renouvellement* (et uniquement pour cela : /api/auth/refresh).
-// Elle évite la déconnexion brutale d'un appareil resté hors ligne ou en
-// veille plus longtemps que la durée de vie du jeton. Défaut : 60 jours.
-const JWT_REFRESH_GRACE = process.env.JWT_REFRESH_GRACE || '60d';
+// Avec des jetons d'1 an, on garde une grâce large (2 ans) pour les appareils
+// restés très longtemps hors ligne.
+const JWT_REFRESH_GRACE = process.env.JWT_REFRESH_GRACE || '2y';
 
 const config = {
   port: Number(process.env.PORT || 4000),
   dbPath: process.env.DB_PATH || path.join(__dirname, '..', 'data', 'scoot.db'),
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-scoot-master',
   jwtTtl: JWT_TTL,
-  jwtTtlSeconds: ttlToSeconds(JWT_TTL, 30 * 86400),
-  jwtRefreshGraceSeconds: ttlToSeconds(JWT_REFRESH_GRACE, 60 * 86400),
+  jwtTtlSeconds: ttlToSeconds(JWT_TTL, 365 * 86400),
+  jwtRefreshGraceSeconds: ttlToSeconds(JWT_REFRESH_GRACE, 2 * 365 * 86400),
   corsOrigin: process.env.CORS_ORIGIN || '*',
   seedOnStart: String(process.env.SEED_ON_START).toLowerCase() !== 'false',
 };

@@ -31,6 +31,15 @@ function expiredToken(user, agoSec) {
   );
 }
 
+/** Forge un jeton VALIDE (non expiré) pour un utilisateur, avec surcharges. */
+function tokenFor(user, overrides = {}) {
+  return jwt.sign(
+    { sub: user.id, username: user.username, role: user.role, fullName: user.fullName, ...overrides },
+    config.jwtSecret,
+    { expiresIn: '1h' }
+  );
+}
+
 test('session : durée longue, renouvellement tolérant, révocation effective', async (t) => {
   const srv = await startTestServer();
   try {
@@ -147,6 +156,74 @@ test('session : durée longue, renouvellement tolérant, révocation effective',
       const pulled = await api(srv.base, renewed.body.token, 'GET', '/api/sync/pull?since=1970-01-01T00:00:00.000Z');
       assert.equal(pulled.status, 200);
       assert.ok(Array.isArray(pulled.body.changes));
+    });
+
+    // ---------------------------------------------------------------------
+    // Révocation effective sur TOUTES les routes protégées.
+    // Un jeton correctement signé ne suffit plus : le compte est relu en base
+    // à chaque requête. Sans ce contrôle, un compte supprimé/désactivé gardait
+    // un accès complet jusqu'à son prochain renouvellement de session.
+    // ---------------------------------------------------------------------
+    await t.test('révocation : compte supprimé → 401 sur les routes protégées', async () => {
+      const admin = await login(srv.base);
+      const created = await api(srv.base, admin.token, 'POST', '/api/users', {
+        username: 'supprime', fullName: 'Compte Supprimé', password: 'motdepasse1', role: 'seller',
+      });
+      assert.equal(created.status, 201);
+      const victim = await login(srv.base, 'supprime', 'motdepasse1');
+      assert.equal(victim.status, 200);
+
+      srv.db.prepare('UPDATE users SET deleted_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), created.body.user.id);
+
+      for (const [method, path] of [['GET', '/api/bikes'], ['GET', '/api/customers'], ['GET', '/api/sales']]) {
+        const res = await api(srv.base, victim.token, method, path);
+        assert.equal(res.status, 401, `${method} ${path} doit refuser un compte supprimé`);
+        assert.equal(res.body.revoked, true, 'le client doit pouvoir distinguer « compte révoqué » de « jeton à renouveler »');
+      }
+      // La synchronisation est concernée au même titre que la lecture.
+      const pushed = await api(srv.base, victim.token, 'POST', '/api/sync/push', { deviceId: 'd1', operations: [] });
+      assert.equal(pushed.status, 401);
+    });
+
+    await t.test('révocation : compte désactivé → 401, réactivation → accès rendu', async () => {
+      const admin = await login(srv.base);
+      const created = await api(srv.base, admin.token, 'POST', '/api/users', {
+        username: 'suspendu', fullName: 'Compte Suspendu', password: 'motdepasse1', role: 'seller',
+      });
+      const victim = await login(srv.base, 'suspendu', 'motdepasse1');
+
+      const off = await api(srv.base, admin.token, 'PATCH', `/api/users/${created.body.user.id}`, { active: false });
+      assert.equal(off.status, 200);
+      const denied = await api(srv.base, victim.token, 'GET', '/api/bikes');
+      assert.equal(denied.status, 401, 'un compte désactivé perd l’accès immédiatement');
+      assert.equal(denied.body.revoked, true);
+
+      const on = await api(srv.base, admin.token, 'PATCH', `/api/users/${created.body.user.id}`, { active: true });
+      assert.equal(on.status, 200);
+      const allowed = await api(srv.base, victim.token, 'GET', '/api/bikes');
+      assert.equal(allowed.status, 200, 'la réactivation rend l’accès sans reconnexion');
+    });
+
+    await t.test('le rôle est lu en base : un jeton au rôle falsifié n’obtient pas les droits admin', async () => {
+      const seller = await login(srv.base, 'vendeur', 'vendeur123');
+      // Jeton signé avec le bon secret mais prétendant au rôle admin.
+      const forged = tokenFor(
+        { id: seller.user.id, username: seller.user.username, role: 'admin', fullName: seller.user.fullName }
+      );
+      const listed = await api(srv.base, forged, 'GET', '/api/users');
+      assert.equal(listed.status, 403, 'le rôle admin revendiqué dans le jeton ne doit pas être accepté');
+
+      const me = await api(srv.base, forged, 'GET', '/api/auth/me');
+      assert.equal(me.status, 200);
+      assert.equal(me.body.user.role, 'seller', 'le profil servi provient de la base, pas du jeton');
+    });
+
+    await t.test('jeton d’un utilisateur inexistant → 401 (aucun accès anonyme privilégié)', async () => {
+      const ghost = tokenFor({ id: 'utilisateur-fantome', username: 'fantome', role: 'admin', fullName: 'Fantôme' });
+      const res = await api(srv.base, ghost, 'GET', '/api/users');
+      assert.equal(res.status, 401);
+      assert.equal(res.body.revoked, true);
     });
   } finally {
     await srv.close();

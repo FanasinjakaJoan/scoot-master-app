@@ -112,6 +112,9 @@ jobs:
           node scripts/web-smoke.mjs || status=1
           # 2) connexion + sync + accueil + navigation + écriture de formulaire
           node scripts/web-smoke.mjs --login admin admin123 --write --wait 40000 || status=1
+          # 3) session périmée (jeton refusé par le serveur) : validée AVANT tout
+          #    appel métier via /api/auth/check (toujours 200, ZÉRO 401) puis connexion
+          node scripts/web-smoke.mjs --stale-session || status=1
           kill $API_PID $WEB_PID 2>/dev/null || true
           exit $status
       - name: Journaux des serveurs (si échec)
