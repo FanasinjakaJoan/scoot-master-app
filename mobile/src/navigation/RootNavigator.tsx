@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text } from 'react-native';
+import { Platform, Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -47,9 +47,25 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   return <Text style={{ fontSize: 16, opacity: focused ? 1 : 0.55 }}>{focused ? t.on : t.off}</Text>;
 }
 
+/**
+ * Raccourcis d'installation (manifeste PWA) : `/?onglet=catalogue|ventes|…`
+ * ouvre directement l'onglet demandé. Sans effet hors navigateur.
+ */
+function initialTabFromShortcut(): string | undefined {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return undefined;
+  const wanted = new URLSearchParams(window.location.search).get('onglet')?.toLowerCase();
+  if (!wanted) return undefined;
+  const map: Record<string, string> = {
+    accueil: 'Dashboard', catalogue: 'Catalog', motos: 'Catalog',
+    ventes: 'Sales', clients: 'Customers', sync: 'Sync',
+  };
+  return map[wanted];
+}
+
 function MainTabs() {
   return (
     <Tabs.Navigator
+      initialRouteName={initialTabFromShortcut()}
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarActiveTintColor: colors.primary,

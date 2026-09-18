@@ -69,6 +69,20 @@ module.exports = function exportRoutes(db) {
     res.status(201).json({ ok: true, file: path.basename(file) });
   });
 
+  /**
+   * GET /api/exports/backups — liste des sauvegardes téléversées (admin).
+   * ⚠️ Doit être déclarée AVANT `/:entity`, sinon le motif `:entity` capte
+   * « backups » et renvoie « Entité inconnue » (route injoignable).
+   */
+  r.get('/backups', requireRole('admin'), (req, res) => {
+    if (!fs.existsSync(STORAGE_DIR)) return res.json({ items: [] });
+    const items = fs.readdirSync(STORAGE_DIR).map((f) => {
+      const st = fs.statSync(path.join(STORAGE_DIR, f));
+      return { file: f, size: st.size, createdAt: st.mtime.toISOString() };
+    });
+    res.json({ items: items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)) });
+  });
+
   /** GET /api/exports/:entity?format=json|csv — bikes | customers | sales */
   r.get('/:entity', (req, res) => {
     const { entity } = req.params;
@@ -85,16 +99,6 @@ module.exports = function exportRoutes(db) {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="scoot-${entity}-${stamp()}.json"`);
     res.send(json);
-  });
-
-  /** GET /api/exports/backups — liste des sauvegardes téléversées (admin). */
-  r.get('/backups', requireRole('admin'), (req, res) => {
-    if (!fs.existsSync(STORAGE_DIR)) return res.json({ items: [] });
-    const items = fs.readdirSync(STORAGE_DIR).map((f) => {
-      const st = fs.statSync(path.join(STORAGE_DIR, f));
-      return { file: f, size: st.size, createdAt: st.mtime.toISOString() };
-    });
-    res.json({ items: items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)) });
   });
 
   return r;

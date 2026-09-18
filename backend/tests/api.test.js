@@ -140,6 +140,32 @@ test('API : catalogue, clients, ventes, exports', async (t) => {
       assert.ok(bk.bikes.length >= 8 && bk.sales.length >= 3 && bk.customers.length >= 5);
       assert.ok(bk.sales[0].items);
     });
+
+    await t.test('sauvegarde : téléversement puis liste (admin)', async () => {
+      const uploaded = await api(srv.base, token, 'POST', '/api/exports/backup', {
+        fileName: 'test-local', data: { app: 'scoot-master', version: 1, bikes: [], customers: [], sales: [] },
+      });
+      assert.equal(uploaded.status, 201);
+      assert.ok(uploaded.body.file, 'le nom du fichier stocké doit être renvoyé');
+
+      // GET /api/exports/backups : doit répondre 200 et lister la sauvegarde.
+      // (Régression : déclarée après `/:entity`, la route était masquée et
+      // renvoyait « Entité inconnue » en 404.)
+      const list = await api(srv.base, token, 'GET', '/api/exports/backups');
+      assert.equal(list.status, 200);
+      assert.ok(Array.isArray(list.body.items));
+      assert.ok(list.body.items.some((i) => i.file === uploaded.body.file),
+        'la sauvegarde téléversée doit apparaître dans la liste');
+
+      // Téléversement invalide → 400.
+      const bad = await api(srv.base, token, 'POST', '/api/exports/backup', { fileName: 'x' });
+      assert.equal(bad.status, 400);
+
+      // Liste réservée au rôle admin.
+      const { token: sellerToken } = await login(srv.base, 'vendeur', 'vendeur123');
+      const forbidden = await api(srv.base, sellerToken, 'GET', '/api/exports/backups');
+      assert.equal(forbidden.status, 403);
+    });
   } finally {
     await srv.close();
   }

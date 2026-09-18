@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, textStyles } from '../theme';
 import { useApp, useDashboard, useSales } from '../store/AppStore';
@@ -7,6 +7,7 @@ import { StatusPill } from '../components/StatusPill';
 import { SaleCard } from '../components/SaleCard';
 import { Card } from '../components/Screen';
 import { EmptyState } from '../components/EmptyState';
+import { InstallAppCard } from '../components/InstallAppCard';
 import { formatMoney, timeAgo } from '../lib/format';
 import type { NavigatorProp } from '../navigation/types';
 
@@ -27,7 +28,7 @@ export function DashboardScreen({ navigation }: NavigatorProp<'Dashboard'>) {
           {timeAgo(app.sync.lastSyncAt)} · {app.user?.role === 'admin' ? 'Administrateur' : 'Vendeur'}
         </Text>
       </View>
-      <View style={styles.body}>
+      <ScrollView style={styles.body} contentContainerStyle={styles.bodyInner}>
         <StatusPill
           online={app.online}
           syncing={app.sync.syncing}
@@ -64,7 +65,10 @@ export function DashboardScreen({ navigation }: NavigatorProp<'Dashboard'>) {
             />
           ))
         )}
-      </View>
+
+        {/* Raccourci d'installation (navigateur) : APK / application de bureau */}
+        <InstallAppCard />
+      </ScrollView>
     </View>
   );
 }
@@ -91,7 +95,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10,
     backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  body: { flex: 1, padding: 16, gap: 12 },
+  body: { flex: 1 },
+  bodyInner: { padding: 16, gap: 12, paddingBottom: 24 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   monthRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   ca: { fontSize: 18, fontWeight: '800', color: colors.success },

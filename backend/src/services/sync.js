@@ -134,8 +134,12 @@ function applyOperation(db, entity, opIn, ctx) {
   if (entity === 'bikes' && pick.photos !== undefined && typeof pick.photos === 'object') {
     pick.photos = JSON.stringify(pick.photos);
   }
-  // Vente : numéro de bon de commande obligatoire (proposé par l'app, ré-affecté si déjà pris)
-  if (entity === 'sales' && !pick.sale_number) {
+  // Vente : le numéro de bon de commande (`BC-AAAA-NNNN`) est attribué par le
+  // serveur **à la création uniquement**. `sale_number` ne fait pas partie de
+  // ENTITY_FIELDS : sans la garde `!row`, chaque mise à jour d'une vente
+  // ré-allouait un numéro (le bon changeait de référence à chaque modification
+  // et libérait l'ancien numéro pour une autre vente).
+  if (entity === 'sales' && !row && !pick.sale_number) {
     pick.sale_number = allocateSaleNumber(
       db,
       typeof payload.sale_number === 'string' && payload.sale_number ? payload.sale_number : null,

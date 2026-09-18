@@ -43,6 +43,10 @@ services:
     environment:
       PORT: "8080"
       API_TARGET: http://api:4000
+    volumes:
+      # Optionnel : déposez un APK dans ./deploy/apk/scoot-master-latest.apk pour
+      # que la page /install et /apk/* le distribuent (sinon → Release GitHub).
+      - ./deploy/apk:/app/deploy/apk:ro
     ports:
       - "8080:8080"
 

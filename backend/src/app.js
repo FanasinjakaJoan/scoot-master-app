@@ -54,6 +54,7 @@ function createApp(db) {
       ['GET', '/api/exports/bikes|customers|sales?format=json|csv', 'Export JSON / CSV (auth)'],
       ['GET', '/api/exports/backup', 'Sauvegarde complète JSON (auth)'],
       ['POST', '/api/exports/backup', 'Téléverser une sauvegarde locale (auth)'],
+      ['GET', '/api/exports/backups', 'Liste des sauvegardes téléversées (admin)'],
     ];
     const rows = eps.map(([m, p, d]) => `<tr><td class="m">${m}</td><td class="p">${p}</td><td>${d}</td></tr>`).join('\n');
     res.type('html').send(`<!doctype html>

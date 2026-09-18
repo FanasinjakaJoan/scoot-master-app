@@ -85,6 +85,9 @@ jobs:
         env:
           EXPO_PUBLIC_API_URL: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
 
+      - name: Lire la version de l'app
+        run: echo "APP_VERSION=$(jq -r .expo.version app.json)" >> $GITHUB_ENV
+
       - name: Renommer APK
         run: |
           APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
@@ -103,6 +106,34 @@ jobs:
             mobile/android/app/build/outputs/apk/release/*.apk
           retention-days: 30
           if-no-files-found: error
+
+      # Release « glissante » : fournit une URL PUBLIQUE et STABLE pour installer
+      # l'APK depuis un téléphone, sans compte GitHub ni artifact à dézipper :
+      #   https://github.com/FanasinjakaJoan/scoot-master-app/releases/latest/download/scoot-master-latest.apk
+      # C'est l'URL utilisée par le raccourci « Télécharger l'APK » dans l'app
+      # (mobile/src/lib/config.ts) et par la page /install du serveur web.
+      - name: Publier la Release « APK (dernière version) »
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-latest
+          name: "APK Scoot Master — dernière version"
+          body: |
+            📱 **APK Android — build automatique de `main`**
+
+            - Package : `mg.scootmaster.app`
+            - Version : `${{ env.APP_VERSION }}`
+            - API : ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
+            - Commit : `${{ github.sha }}`
+
+            **Installation** : téléchargez `scoot-master-latest.apk`, ouvrez-le sur le
+            téléphone et autorisez les « sources inconnues ».
+
+            Lien direct (utilisé par l'application) :
+            `https://github.com/FanasinjakaJoan/scoot-master-app/releases/latest/download/scoot-master-latest.apk`
+          files: mobile/scoot-master-latest.apk
+          make_latest: true
+          fail_on_unmatched_files: true
 
       - name: Upload APK vers transfer.sh (lien public temporaire)
         if: always()
@@ -134,13 +165,17 @@ jobs:
             mobile/scoot-master-latest.apk
             mobile/android/app/build/outputs/apk/release/*.apk
           fail_on_unmatched_files: false
+          # La Release « apk-latest » reste LA dernière version publiée :
+          # l'URL .../releases/latest/download/scoot-master-latest.apk doit
+          # toujours pointer sur le build de `main`.
+          make_latest: false
 
       - name: Résumé
         run: |
           echo "### 📱 APK généré avec succès !" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Package**: mg.scootmaster.app" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: $(jq -r .expo.version app.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${APP_VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "- **API URL**: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Transfer.sh**: ${{ env.TRANSFER_URL }}" >> $GITHUB_STEP_SUMMARY

@@ -5,6 +5,7 @@ import {
 import { Alert } from '../lib/alert';
 import { colors, radius, textStyles } from '../theme';
 import { Button } from '../components/Buttons';
+import { InstallAppCard } from '../components/InstallAppCard';
 import { useApp } from '../store/AppStore';
 
 export function LoginScreen() {
@@ -74,6 +75,9 @@ export function LoginScreen() {
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Button title={busy ? 'Connexion…' : 'Se connecter'} onPress={submit} disabled={busy} />
         </View>
+
+        {/* Raccourci d'installation : APK Android ou application de bureau */}
+        <InstallAppCard compact />
       </ScrollView>
     </KeyboardAvoidingView>
   );

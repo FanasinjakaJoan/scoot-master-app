@@ -8,6 +8,9 @@ backend/data/
 backend/storage/
 backend/.env
 
+# APK hébergés par le serveur web (déposés à la main, non versionnés)
+deploy/apk/
+
 # Mobile / Expo
 mobile/node_modules/
 mobile/dist/

@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { initLocalDb } from './src/data/local/db';
 import { APP_NAME } from './src/lib/config';
+import { setupInstallPrompt } from './src/lib/installApp';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { AppProvider } from './src/store/AppStore';
 import { colors, radius, spacing, textStyles } from './src/theme';
@@ -35,6 +36,13 @@ export default function App() {
   }, []);
 
   useEffect(boot, [boot]);
+
+  // Navigateur uniquement (non-événement ailleurs) : déclare le manifeste web,
+  // enregistre le service worker et capte l'invite d'installation — c'est ce qui
+  // alimente le raccourci « Installer l'application » (mobile et bureau).
+  useEffect(() => {
+    setupInstallPrompt();
+  }, []);
 
   return (
     <ErrorBoundary>

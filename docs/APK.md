@@ -194,7 +194,69 @@ cd android && ./gradlew assembleRelease
 
 ---
 
-## 6. Checklist avant distribution
+## 6. Raccourci « Installer l'application » (in-app)
+
+Pour qu'un utilisateur n'ait **rien à taper**, l'application propose elle-même son
+installation. Le raccourci apparaît sur l'écran de connexion et sur l'accueil
+(navigateur uniquement — un build natif est déjà installé) :
+
+| Appareil | Action du raccourci |
+|---|---|
+| Android (Chrome/Edge/Samsung Internet) | invite d'installation PWA → icône au lanceur ; sinon bouton **Télécharger l'APK** |
+| PC (Chrome/Edge) | invite d'installation → **application de bureau** (fenêtre dédiée, icône au menu Démarrer) |
+| iPhone / iPad (Safari) | procédure guidée « Partager → Sur l'écran d'accueil » |
+
+**Ce qui rend l'app web installable**
+
+| Fichier | Rôle |
+|---|---|
+| `mobile/public/manifest.webmanifest` | nom, icônes 192/512 + maskable, `start_url`, `display: standalone`, raccourcis Catalogue / Ventes / Sync |
+| `mobile/public/sw.js` | service worker : shell hors ligne, `/api/*` jamais mis en cache |
+| `mobile/public/icons/*.png` | icônes générées depuis `assets/icon.png` |
+| `mobile/src/lib/installApp.ts` | déclaration du manifeste, enregistrement du SW, capture de `beforeinstallprompt`, plan d'installation par plateforme |
+| `mobile/src/components/InstallAppCard.tsx` | la carte « Installer » affichée dans les écrans |
+
+`expo export` copie `mobile/public/` à la racine de `dist/` ; le serveur web
+(`deploy/web-server.js`) sert `manifest.webmanifest` en `application/manifest+json`
+(type MIME exigé par Chrome pour proposer l'installation).
+
+**Page `/install`** : `https://<votre-hôte>/install` — un seul lien (QR code possible)
+qui propose l'APK et toutes les procédures (Android, iOS, bureau).
+
+**URL de l'APK utilisée par le raccourci**
+
+```
+https://github.com/FanasinjakaJoan/scoot-master-app/releases/latest/download/scoot-master-latest.apk
+```
+
+Cette Release « glissante » (tag `apk-latest`) est publiée automatiquement par le
+workflow `apk.yml` à chaque build sur `main` : l'URL est publique, stable et
+téléchargeable directement depuis un navigateur mobile (pas d'artifact à dézipper,
+pas de compte GitHub requis).
+
+Surcharges au build :
+
+```bash
+EXPO_PUBLIC_APK_URL=https://mon-serveur/scoot.apk      # autre emplacement d'APK
+EXPO_PUBLIC_INSTALL_URL=https://mon-serveur/install    # autre page guide
+```
+
+**APK auto-hébergé** (sans GitHub) : déposez le fichier dans `deploy/apk/`
+(dossier git-ignoré) :
+
+```bash
+mkdir -p deploy/apk
+cp mobile/scoot-master-latest.apk deploy/apk/
+node deploy/web-server.js          # /install et /apk/scoot-master-latest.apk le servent
+```
+
+`/apk/<fichier>` répond alors en `application/vnd.android.package-archive` avec
+`Content-Disposition: attachment` (téléchargement direct) ; sinon il redirige (302)
+vers la Release GitHub.
+
+---
+
+## 7. Checklist avant distribution
 
 - [ ] `app.json` : `version` bumpée, `android.package` = `mg.scootmaster.app`, `versionCode` auto-incrémenté (EAS) ou manuellement dans `android/app/build.gradle`
 - [ ] `EXPO_PUBLIC_API_URL` pointe vers prod Render (`https://scoot-master-api.onrender.com`)
@@ -203,11 +265,12 @@ cd android && ./gradlew assembleRelease
 - [ ] Test sur vrai appareil : login `admin/admin123`, catalogue, création moto offline, sync
 - [ ] Signature Release (keystore) si distribution Play Store
 - [ ] Upload sur GitHub Releases ou Play Console
-- [ ] Documentation : URL API, comptes démo, procédure d'install
+- [ ] Documentation : URL API, comptes démo, procédure d'install (page `/install`)
+- [ ] Raccourci in-app vérifié : `cd mobile && npm run smoke:web` (contrôle le manifeste et la carte « Installer »)
 
 ---
 
-## 7. Liens
+## 8. Liens
 
 - Workflow APK : `.github/workflows/apk.yml`
 - Config EAS : `mobile/eas.json`
