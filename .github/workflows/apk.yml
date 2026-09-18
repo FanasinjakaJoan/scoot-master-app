@@ -104,6 +104,37 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Upload APK vers transfer.sh (lien public temporaire)
+        if: always()
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "Upload $APK_PATH vers transfer.sh..."
+          # transfer.sh fournit un lien direct téléchargeable (14 jours)
+          curl --upload-file "$APK_PATH" https://transfer.sh/scoot-master-latest.apk --no-progress-meter | tee /tmp/transfer_url.txt
+          echo "TRANSFER_URL=$(cat /tmp/transfer_url.txt)" >> $GITHUB_ENV
+          echo "Lien transfer.sh : $(cat /tmp/transfer_url.txt)"
+
+      - name: Créer Release GitHub avec APK (si tag ou workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.sha }}
+          name: "APK Scoot Master - ${{ github.sha }}"
+          body: |
+            📱 APK Android généré automatiquement
+
+            - Package: mg.scootmaster.app
+            - Version: ${{ fromJSON(steps.version.outputs.version || '{}').version || '1.0.0' }}
+            - API URL: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
+            - Commit: ${{ github.sha }}
+            - Lien transfer.sh: ${{ env.TRANSFER_URL }}
+
+            Installation : `adb install scoot-master-latest.apk` ou transfert sur téléphone.
+          files: |
+            mobile/scoot-master-latest.apk
+            mobile/android/app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: false
+
       - name: Résumé
         run: |
           echo "### 📱 APK généré avec succès !" >> $GITHUB_STEP_SUMMARY
@@ -112,8 +143,9 @@ jobs:
           echo "- **Version**: $(jq -r .expo.version app.json)" >> $GITHUB_STEP_SUMMARY
           echo "- **API URL**: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Transfer.sh**: ${{ env.TRANSFER_URL }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Téléchargez l'APK dans l'onglet **Artifacts** de ce workflow." >> $GITHUB_STEP_SUMMARY
+          echo "Téléchargez l'APK dans l'onglet **Artifacts** de ce workflow ou via le lien transfer.sh." >> $GITHUB_STEP_SUMMARY
 
   # Optionnel : Build via EAS (nécessite EXPO_TOKEN en secret)
   build-apk-eas:
