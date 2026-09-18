@@ -5,12 +5,13 @@ const cors = require('cors');
 const { config } = require('./config');
 const { errorHandler } = require('./middleware/error');
 
-const authRoutes = require('./routes/auth');
+  const authRoutes = require('./routes/auth');
 const bikeRoutes = require('./routes/bikes');
 const customerRoutes = require('./routes/customers');
 const saleRoutes = require('./routes/sales');
 const syncRoutes = require('./routes/sync');
 const exportRoutes = require('./routes/exports');
+const userRoutes = require('./routes/users');
 
 /**
  * Fabrique l'application Express (séparable du serveur pour les tests).
@@ -74,16 +75,16 @@ function createApp(db) {
 <p>Backend offline-first : catalogue, ventes &amp; clients, file de synchronisation (push/pull),
 résolution de conflits <em>Last-Write-Wins</em> avec validation admin, exports JSON/CSV.</p>
 <div>
- <span class="badge">POST /api/auth/login — démo : <b>admin / admin123</b></span>
- <span class="badge">vendeur / vendeur123</span>
+ <span class="badge">POST /api/auth/login — authentification sécurisée</span>
 </div>
 <table>${rows}</table>
-<p class="foot">Comptes de démo : <code>admin / admin123</code> (admin) et <code>vendeur / vendeur123</code>.
+<p class="foot">Accès administrateur requis pour la gestion des utilisateurs.
 Documentation : <code>docs/API.md</code>, schéma : <code>docs/DATABASE_SCHEMA.md</code>, logique de sync : <code>docs/SYNC.md</code>.</p>
 </div></body></html>`);
   });
 
   app.use('/api/auth', authRoutes(db));
+  app.use('/api/users', userRoutes(db));
   app.use('/api/bikes', bikeRoutes(db));
   app.use('/api/customers', customerRoutes(db));
   app.use('/api/sales', saleRoutes(db));

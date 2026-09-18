@@ -9,6 +9,7 @@ export type RootStackParamList = {
   Sales: undefined;
   Customers: undefined;
   Sync: undefined;
+  UserManagement: undefined;
   BikeDetail: { id: string };
   BikeForm: { id?: string };
   CustomerDetail: { id: string };

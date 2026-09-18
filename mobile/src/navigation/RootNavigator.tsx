@@ -17,6 +17,7 @@ import { CustomersScreen } from '../screens/CustomersScreen';
 import { CustomerDetailScreen } from '../screens/CustomerDetailScreen';
 import { CustomerFormScreen } from '../screens/CustomerFormScreen';
 import { SyncScreen } from '../screens/SyncScreen';
+import { UserManagementScreen } from '../screens/UserManagementScreen';
 import { useApp } from '../store/AppStore';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -88,6 +89,7 @@ export function RootNavigator() {
         }}
       >
         <Stack.Screen name="Tabs" component={MainTabs} options={{ headerShown: false }} />
+        <Stack.Screen name="UserManagement" component={UserManagementScreen} options={{ presentation: 'modal' }} />
         <Stack.Screen name="BikeDetail" component={BikeDetailScreen} options={{ presentation: 'modal' }} />
         <Stack.Screen name="BikeForm" component={BikeFormScreen} options={{ presentation: 'modal' }} />
         <Stack.Screen name="CustomerDetail" component={CustomerDetailScreen} options={{ presentation: 'modal' }} />
