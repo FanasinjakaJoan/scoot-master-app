@@ -1,0 +1,124 @@
+name: 📱 Build APK Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/apk.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Profil EAS (preview, production, local)"
+        required: false
+        default: "preview"
+        type: choice
+        options:
+          - preview
+          - production
+          - local
+      api_url:
+        description: "URL de l'API (EXPO_PUBLIC_API_URL)"
+        required: false
+        default: "https://scoot-master-api.onrender.com"
+        type: string
+
+jobs:
+  build-apk-gradle:
+    name: 🤖 Build APK (Gradle local, sans EAS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Setup Java 17 (pour Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Expo prebuild (génère dossier android/)
+        run: npx expo prebuild --platform android --clean --no-install
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
+
+      - name: Build APK Release avec Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon -x lint
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
+
+      - name: Renommer APK
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "APK trouvé: $APK_PATH"
+          cp "$APK_PATH" scoot-master-${{ github.sha }}.apk
+          cp "$APK_PATH" scoot-master-latest.apk
+          ls -lh *.apk
+
+      - name: Upload APK en artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scoot-master-apk
+          path: |
+            mobile/scoot-master-*.apk
+            mobile/android/app/build/outputs/apk/release/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Résumé
+        run: |
+          echo "### 📱 APK généré avec succès !" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: mg.scootmaster.app" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: $(jq -r .expo.version app.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- **API URL**: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Téléchargez l'APK dans l'onglet **Artifacts** de ce workflow." >> $GITHUB_STEP_SUMMARY
+
+  # Optionnel : Build via EAS (nécessite EXPO_TOKEN en secret)
+  build-apk-eas:
+    name: ☁️ Build APK (EAS Cloud, optionnel)
+    runs-on: ubuntu-latest
+    if: ${{ false }} # Désactivé par défaut, activez en mettant true ou en ajoutant un secret EXPO_TOKEN
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - run: npm ci
+      - name: EAS Build APK (preview)
+        run: eas build --platform android --profile ${{ inputs.profile || 'preview' }} --non-interactive --no-wait
+        env:
+          EXPO_PUBLIC_API_URL: ${{ inputs.api_url || 'https://scoot-master-api.onrender.com' }}
+# trigger
