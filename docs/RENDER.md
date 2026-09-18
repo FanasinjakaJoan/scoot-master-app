@@ -235,7 +235,8 @@ Si vous préférez créer les services à la main :
 | `NODE_ENV` | `production` | Active optimisations Express | Oui |
 | `PORT` | `10000` (injecté par Render) | Port d'écoute. `backend/src/config.js` lit `process.env.PORT` | Auto |
 | `JWT_SECRET` | généré (`generateValue: true`) | Secret de signature JWT. **Ne pas partager**. Régénérer invalide tous les tokens | Oui |
-| `JWT_TTL` | `12h` (défaut) | Durée de validité du token | Non |
+| `JWT_TTL` | `30d` (défaut) | Durée de validité du token. L'app le renouvelle en arrière-plan : l'utilisateur reste connecté jusqu'à sa déconnexion | Non |
+| `JWT_REFRESH_GRACE` | `60d` (défaut) | Délai pendant lequel un token expiré reste **renouvelable** (appareil resté hors ligne). Au-delà : reconnexion | Non |
 | `SEED_ON_START` | `true` puis `false` | Sème la base si vide. Idempotent. Mettez `true` au premier déploiement, vous pouvez passer à `false` après pour éviter tout risque, mais `true` reste sûr | Recommandé `true` au début |
 | `CORS_ORIGIN` | `*` ou `https://...` | Origines autorisées. `*` pour dev, en prod mettez l'URL du web | Oui |
 | `DB_PATH` | `/app/data/scoot.db` | Chemin SQLite sur disque persistant | Oui |
@@ -345,6 +346,8 @@ npx expo start
 | `no such table: users` | Disque non monté ou `DB_PATH` hors disque | Vérifiez `DB_PATH=/app/data/scoot.db` et que le disque est monté sur `/app/data`. Shell API : `ls /app/data/` |
 | Healthcheck échoue | Port incorrect | L'API doit écouter sur `$PORT`. Vérifiez logs : `Scoot Master API — http://0.0.0.0:10000`. Si elle écoute sur 4000 alors que Render attend 10000, le healthcheck échoue. Ne forcez pas `PORT` manuellement, laissez Render l'injecter |
 | `JWT malformed` après redéploiement | `JWT_SECRET` a changé | Tous les tokens signés avec l'ancien secret sont invalides. Les utilisateurs doivent se reconnecter. Évitez de régénérer `JWT_SECRET` en prod |
+| **Déconnexion automatique peu après la connexion** | 1) `JWT_SECRET` non fixé : chaque redémarrage du service (ou chaque instance) génère un secret différent, invalidant les jetons en cours ; 2) `JWT_TTL` trop court ; 3) horloge de l'appareil décalée | 1) Fixez un `JWT_SECRET` **stable** dans l'environnement du service (ne le régénérez pas à chaque déploiement) et vérifiez qu'il est identique sur toutes les instances ; 2) laissez `JWT_TTL=30d` (défaut) ; 3) rien à faire côté client : l'app ne se fie plus à l'horloge locale et renouvelle la session auprès du serveur |
+| Déconnexion après une nuit hors ligne | Jeton expiré au-delà de `JWT_REFRESH_GRACE` | Augmentez `JWT_REFRESH_GRACE` (défaut `60d`). En deçà, l'app renouvelle seule la session au retour du réseau |
 | Build web échoue `expo export` | Mémoire insuffisante (Free plan) | Passez le web en Starter (512 MB → 1 GB RAM). Ou augmentez `NODE_OPTIONS=--max-old-space-size=2048` en env var |
 | Base vide, pas de comptes | `SEED_ON_START=false` au premier démarrage | Mettez `SEED_ON_START=true`, redéployez. Vérifiez logs : seed ne s'exécute que si `users` vide |
 | CORS error depuis le web | `CORS_ORIGIN` trop restrictif | Si le web passe par le proxy `/api`, CORS ne devrait pas se déclencher (même origine). Si vous appelez l'API directement depuis le navigateur, mettez `CORS_ORIGIN=https://scoot-master-web.onrender.com` ou `*` en dev |

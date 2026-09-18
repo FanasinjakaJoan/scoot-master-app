@@ -8,9 +8,12 @@ import type { QueueOperation, ServerChange } from '../../types';
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** true si le serveur signale une session expirée (renouvelable). */
+  expired: boolean;
+  constructor(status: number, message: string, expired = false) {
     super(message);
     this.status = status;
+    this.expired = expired;
   }
 }
 
@@ -37,8 +40,9 @@ export async function apiCall<T>(
   let json: unknown;
   try { json = JSON.parse(text); } catch { json = { raw: text }; }
   if (!res.ok) {
-    const message = (json as { error?: string })?.error || `Erreur ${res.status}`;
-    throw new ApiError(res.status, message);
+    const body = json as { error?: string; expired?: boolean };
+    const message = body?.error || `Erreur ${res.status}`;
+    throw new ApiError(res.status, message, Boolean(body?.expired));
   }
   return json as T;
 }
@@ -47,21 +51,31 @@ export async function apiCall<T>(
 // Authentification
 // ---------------------------------------------------------------------
 
-export async function login(username: string, password: string): Promise<{ token: string; user: { id: string; username: string; fullName: string; role: string } }> {
-  return apiCall<{ token: string; user: { id: string; username: string; fullName: string; role: string } }>(
-    null, 'POST', '/api/auth/login', { username, password }
-  );
+/** Réponse de session (login / refresh) : jeton, échéance absolue et profil. */
+export interface SessionResponse {
+  token: string;
+  /** Epoch ms d'expiration, calculé par le SERVEUR (immunise du décalage d'horloge). */
+  expiresAt?: number;
+  expiresIn?: number;
+  user: { id: string; username: string; fullName: string; role: string };
+}
+
+export async function login(username: string, password: string): Promise<SessionResponse> {
+  return apiCall<SessionResponse>(null, 'POST', '/api/auth/login', { username, password });
 }
 
 /**
- * Renouvelle le jeton courant (glissement de session). Le serveur re-vérifie
- * que le compte existe toujours et reste actif. En cas d'expiration → ApiError
- * 401 : l'appelant doit déclencher la réauthentification (jamais une purge locale).
+ * Renouvelle le jeton courant (glissement de session).
+ *
+ * Le serveur accepte aussi un jeton récemment expiré (fenêtre de tolérance) :
+ * une session n'est donc PAS perdue parce que l'appareil est resté hors ligne
+ * ou en veille. Il re-vérifie que le compte existe toujours et reste actif.
+ * Un 401 ici signifie une vraie fin de session (compte supprimé/désactivé,
+ * secret changé, expiration hors tolérance) : l'appelant demande alors une
+ * réauthentification — jamais une purge des données locales.
  */
-export function refreshToken(token: string): Promise<{ token: string; user: { id: string; username: string; fullName: string; role: string } }> {
-  return apiCall<{ token: string; user: { id: string; username: string; fullName: string; role: string } }>(
-    token, 'POST', '/api/auth/refresh'
-  );
+export function refreshToken(token: string): Promise<SessionResponse> {
+  return apiCall<SessionResponse>(token, 'POST', '/api/auth/refresh');
 }
 
 // ---------------------------------------------------------------------
