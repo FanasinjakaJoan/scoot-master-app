@@ -5,6 +5,7 @@ import {
 import { Alert } from '../lib/alert';
 import { colors, radius, textStyles } from '../theme';
 import { Button } from '../components/Buttons';
+import { InstallAppCard } from '../components/InstallAppCard';
 import { useApp } from '../store/AppStore';
 
 export function LoginScreen() {
@@ -79,6 +80,9 @@ export function LoginScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Raccourci d'installation : APK Android ou application de bureau */}
+        <InstallAppCard compact />
       </ScrollView>
     </KeyboardAvoidingView>
   );

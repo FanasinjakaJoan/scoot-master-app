@@ -76,7 +76,7 @@ scoot-master-app/
 ├── render.yaml                ← Blueprint Render : 2 Web Services + disque (1 commande cloud)
 ├── docker-compose.yml         ← pile complète locale : API + app web (1 commande)
 ├── .github/workflows/         ← CI + CD GHCR + Build APK Android (Gradle)
-├── deploy/web-server.js       ← serveur web statique + proxy /api (zéro dépendance)
+├── deploy/web-server.js       ← serveur web statique + proxy /api + page /install + APK (zéro dépendance)
 ├── docs/
 │   ├── RENDER.md              ← déploiement & hébergement Render (Web Service, guide complet)
 │   ├── APK.md                 ← build APK Android (GitHub Actions, local Gradle, EAS)
@@ -94,7 +94,7 @@ scoot-master-app/
 │   │   ├── middleware/        ← auth JWT, rôles, erreurs
 │   │   ├── services/sync.js   ← moteur push/pull, LWW, force, renumérotation
 │   │   └── routes/            ← auth, bikes, customers, sales, sync, exports
-│   ├── tests/                 ← 24 tests (node:test) : API, auth, sync
+│   ├── tests/                 ← 26 tests (node:test) : API, auth, sync, sauvegardes
 │   └── Dockerfile             ← image de production de l'API
 └── mobile/                    ← App React Native (Expo SDK 57, TypeScript)
     ├── App.tsx                ← garde d'initialisation (base locale) + ErrorBoundary
@@ -129,7 +129,7 @@ npm start            # http://localhost:4000  (données de démo automatiquement
 - Comptes de démo : **admin / admin123** (administrateur) et **vendeur / vendeur123**.
 
 ```bash
-npm test             # 24 tests : auth, rôles, CRUD, ventes, exports, sync LWW/conflicts
+npm test             # 26 tests : auth, rôles, CRUD, ventes, exports, sauvegardes, sync LWW/conflicts
 ```
 
 ### 2. Application mobile
@@ -184,8 +184,9 @@ npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, o
 
 | Couche | Commande | Contenu |
 |---|---|---|
-| Backend | `cd backend && npm test` | 24 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sync push/pull, LWW, conflits, `force` admin, renumérotation des bons, pagination par curseur |
-| Mobile | `cd mobile && npm test` | 36 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints) |
+| Backend | `cd backend && npm test` | 26 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur |
+| API réelle | `cd backend && npm run check:api` | 36 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
+| Mobile | `cd mobile && npm test` | 52 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché) |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
 | Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
@@ -244,6 +245,30 @@ eas build --platform android --profile preview
 - Config : `mobile/eas.json` (preview/production/local, buildType apk, API URL Render)
 - Script : `mobile/build-apk.sh` (npm ci + expo prebuild + gradlew assembleRelease)
 - Guide complet : 📖 [`docs/APK.md`](docs/APK.md)
+
+### 📲 Raccourci « Installer l'application »
+
+Un raccourci d'installation est présent **dans l'app** (écran de connexion et accueil,
+navigateur uniquement) et sur la page **`/install`** du serveur web :
+
+| Appareil | Ce que fait le raccourci |
+|---|---|
+| **Android (navigateur)** | invite d'installation PWA → icône au lanceur ; sinon bouton **Télécharger l'APK** |
+| **PC (Chrome / Edge)** | invite d'installation → **application de bureau** (fenêtre dédiée, icône au menu Démarrer) |
+| **iPhone / iPad (Safari)** | procédure « Partager → Sur l'écran d'accueil » (aucune invite programmatique sur iOS) |
+
+- **PWA** : `mobile/public/manifest.webmanifest` (nom, icônes 192/512 + maskable,
+  `display: standalone`, raccourcis Catalogue / Ventes / Sync) et `mobile/public/sw.js`
+  (shell hors ligne ; `/api/*` n'est **jamais** mis en cache). Les deux sont copiés
+  tels quels dans `dist/` par `expo export`, puis déclarés au démarrage
+  (`src/lib/installApp.ts` ← `App.tsx`).
+- **APK** : URL stable et publique
+  `https://github.com/FanasinjakaJoan/scoot-master-app/releases/latest/download/scoot-master-latest.apk`
+  (Release glissante publiée par le workflow APK à chaque build sur `main`).
+  Surcharge au build : `EXPO_PUBLIC_APK_URL`.
+- **APK auto-hébergé** : déposez le fichier dans `deploy/apk/scoot-master-latest.apk`
+  (dossier git-ignoré) → la page `/install` et `/apk/scoot-master-latest.apk` le servent
+  avec le bon type MIME ; sinon redirection vers la Release GitHub.
 
 Détails complets :
 - 📖 Local & GHCR : [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)

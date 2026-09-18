@@ -71,7 +71,7 @@ Comptes créés par le seed :
 ### 2.4 Tests
 
 ```bash
-npm test           # 24 tests (node:test) — auth, CRUD, ventes, exports, sync
+npm test           # 26 tests (node:test) — auth, CRUD, ventes, exports, sauvegardes, sync
 ```
 
 ### 2.5 Docker (optionnel)

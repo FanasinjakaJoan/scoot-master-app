@@ -198,6 +198,48 @@ test('sync : push hors ligne, LWW, conflits, force, pull, tombstones', async (t)
       assert.ok(/^BC-\d{4}-\d{4}$/.test(n2), 'numéro ré-affecté inattendu : ' + n2);
     });
 
+    await t.test('une mise à jour ne change pas le numéro de bon', async () => {
+      // Régression : l'allocation du numéro s'exécutait aussi sur les `update`,
+      // si bien que chaque modification d'une vente lui attribuait un nouveau
+      // BC-AAAA-NNNN (et libérait l'ancien numéro pour une autre vente).
+      const id = 's-2001';
+      const created = await api(srv.base, admin.token, 'POST', '/api/sync/push', {
+        deviceId: DEVICE_A,
+        operations: [{
+          entity: 'sales', op: 'create', id,
+          payload: {
+            customer_id: 'c-0001', status: 'brouillon',
+            sale_date: new Date().toISOString().slice(0, 10),
+            items: [{ bike_id: 'b-0001', unit_price: 500000, quantity: 1 }],
+          },
+          clientTs: nowIso(),
+        }],
+      });
+      assert.equal(created.body.results[0].status, 'ok');
+      const original = created.body.results[0].saleNumber;
+      assert.ok(/^BC-\d{4}-\d{4}$/.test(original), 'numéro initial inattendu : ' + original);
+
+      // Trois modifications successives : le numéro doit rester stable.
+      for (const payload of [{ status: 'confirme' }, { discount: 50000 }, { amount_paid: 200000 }]) {
+        const upd = await api(srv.base, admin.token, 'POST', '/api/sync/push', {
+          deviceId: DEVICE_A,
+          operations: [{ entity: 'sales', op: 'update', id, payload, clientTs: nowIso() }],
+        });
+        assert.equal(upd.body.results[0].status, 'ok');
+        assert.equal(upd.body.results[0].saleNumber, original,
+          `numéro modifié après ${JSON.stringify(payload)} : ${upd.body.results[0].saleNumber}`);
+      }
+
+      const after = await api(srv.base, admin.token, 'GET', `/api/sales/${id}`);
+      assert.equal(after.status, 200);
+      assert.equal(after.body.sale.sale_number, original);
+      // Les effets de domaine et le recalcul du paiement restent appliqués.
+      assert.equal(after.body.sale.status, 'confirme');
+      assert.equal(after.body.sale.discount, 50000);
+      assert.equal(after.body.sale.amount_paid, 200000);
+      assert.equal(after.body.sale.payment_status, 'partial');
+    });
+
     await t.test('santé et statut', async () => {
       const h = await api(srv.base, null, 'GET', '/api/health');
       assert.equal(h.body.ok, true);

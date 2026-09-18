@@ -1,0 +1,58 @@
+{
+  "name": "Scoot Master",
+  "short_name": "Scoot Master",
+  "description": "Gestion des motos 4T d'occasion : catalogue, ventes, clients et synchronisation hors ligne.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "lang": "fr",
+  "categories": ["business", "productivity"],
+  "background_color": "#F6F7F9",
+  "theme_color": "#FF5A1F",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Catalogue motos",
+      "short_name": "Catalogue",
+      "description": "Ouvrir le catalogue et le stock",
+      "url": "/?onglet=catalogue",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Ventes",
+      "short_name": "Ventes",
+      "description": "Bons de commande et ventes",
+      "url": "/?onglet=ventes",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Synchronisation",
+      "short_name": "Sync",
+      "description": "Synchroniser, exporter et sauvegarder",
+      "url": "/?onglet=sync",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

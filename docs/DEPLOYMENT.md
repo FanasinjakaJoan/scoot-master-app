@@ -141,7 +141,7 @@ La page d'accueil de l'API liste tous les endpoints avec leurs paramètres.
 ## 4. Tests & validation locale
 
 ```bash
-# Backend — 24 tests (auth, CRUD, exports, sync push/pull, LWW, conflits)
+# Backend — 26 tests (auth, CRUD, exports, sauvegardes, sync push/pull, LWW, conflits)
 cd backend && npm ci && npm test
 
 # Mobile — vérification des types + 12 tests Jest (LWW, CSV, formatage)

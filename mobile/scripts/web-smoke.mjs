@@ -47,9 +47,13 @@ const url = argv.find((a, i) => !consumed.has(i) && !a.startsWith('--')) || 'htt
 const login = takesTwo('--login');
 const write = argv.includes('--write');
 const expectFlag = flagValue('--expect');
-// En mode connecté, l'écran attendu est l'accueil (le logo « Scoot Master » est
-// celui de l'écran de connexion) : --expect reste utilisable pour forcer un autre contenu.
-const expect = expectFlag ?? (login ? 'Motos disponibles' : 'Scoot Master');
+// Écran attendu :
+//  - sans --login : l'écran de CONNEXION (et non l'écran de démarrage « Scoot
+//    Master » qui porte le même logo — d'où « Se connecter », texte propre au
+//    formulaire, pour éviter un faux positif tant que la base locale s'initialise) ;
+//  - avec --login : l'accueil et ses statistiques (donc la base locale remplie
+//    par le pull de synchronisation).
+const expect = expectFlag ?? (login ? 'Motos disponibles' : 'Se connecter');
 
 const waitMs = Number(flagValue('--wait') ?? (login ? 25000 : 8000));
 const origin = new URL(url).origin;
@@ -154,7 +158,9 @@ if (!text.includes(expect)) {
   console.log(`\n✗ Le rendu ne contient pas « ${expect} » — page blanche probable.`);
   failed = true;
 }
-if (login) {
+// Avec un `--expect` explicite (ex. URL de raccourci `/?onglet=catalogue`),
+// l'écran attendu n'est pas l'accueil : on laisse la vérification générique ci-dessus.
+if (login && !expectFlag) {
   // Après connexion : l'accueil doit afficher les statistiques et le moteur de
   // synchronisation doit avoir rempli la base locale (pull des données de démo).
   const synced = /(\d+)\s*Motos disponibles/.exec(text);
@@ -259,8 +265,52 @@ if (!failed && write) {
           } else {
             console.log('\n✓ Écriture via formulaire OK (base locale + file de synchronisation).');
           }
+
+          // La synchronisation doit avoir POUSSÉ l'écriture jusqu'au serveur :
+          // c'est la preuve du cycle complet UI → SQLite web → file → push API.
+          const q = await fetch(`${origin}/api/bikes?q=${encodeURIComponent(brand)}`, {
+            headers: { Authorization: `Bearer ${session.token}` },
+          }).catch(() => null);
+          const body = q && q.ok ? await q.json() : null;
+          const found = (body?.items ?? []).find((b) => b.model === 'Sprint test');
+          if (!found) {
+            console.log('\n✗ Écriture locale absente du serveur : le push de synchronisation n\'a pas abouti.');
+            failed = true;
+          } else {
+            console.log(`✓ Synchronisation OK — la moto « ${found.brand} ${found.model} » est bien sur le serveur (prix ${found.price} Ar).`);
+          }
         }
       }
+    }
+  }
+}
+
+// --- raccourci d'installation (PWA / APK) ---
+if (!failed) {
+  const doc = dom.window.document;
+  const screen = textOf();
+  // La carte « Installer » vit sur les écrans d'entrée (connexion, accueil) ;
+  // un deep-link (`/?onglet=…`) peut rendre un autre écran : on n'exige alors
+  // que le manifeste, qui est ce qui rend l'app installable.
+  const onEntryScreen = /Se connecter|Bonjour,/.test(screen);
+  const hasCard = /Installer Scoot Master|Installer l'application|Télécharger l'APK|Guide d'installation|application de bureau/i.test(screen);
+  const manifest = doc.querySelector('link[rel="manifest"]');
+
+  if (!manifest) {
+    console.log('\n✗ Manifeste web non déclaré (<link rel="manifest">) : l\'app ne serait pas installable.');
+    failed = true;
+  } else if (onEntryScreen && !hasCard) {
+    console.log('\n✗ Raccourci « Installer l\'application » absent de l\'écran rendu.');
+    failed = true;
+  } else {
+    const res = await fetch(new URL(manifest.getAttribute('href'), origin)).catch(() => null);
+    const ctype = res?.headers.get('content-type') || '';
+    const man = res && res.ok ? await res.json().catch(() => null) : null;
+    if (!res || !res.ok || !ctype.includes('manifest+json') || !man?.name) {
+      console.log(`\n✗ Manifeste injoignable ou invalide (status=${res?.status}, content-type=${ctype}).`);
+      failed = true;
+    } else {
+      console.log(`\n✓ Raccourci d'installation OK — manifeste « ${man.name} » (${man.icons?.length} icônes, display=${man.display})${hasCard ? ', carte « Installer » affichée' : ''}.`);
     }
   }
 }
