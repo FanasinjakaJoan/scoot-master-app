@@ -47,6 +47,41 @@ const JWT_TTL = process.env.JWT_TTL || '1y';
 // restés très longtemps hors ligne.
 const JWT_REFRESH_GRACE = process.env.JWT_REFRESH_GRACE || '2y';
 
+/**
+ * Normalise `CORS_ORIGIN` en liste d'origines.
+ *
+ * Tolère les saisies réelles d'un tableau de bord : espaces autour des entrées,
+ * URL terminées par `/`, ou origine réduite à un hôte. Une valeur vide, `*` ou
+ * la valeur littérale `false` active le mode ouvert (toutes les origines).
+ *
+ * Une entrée inexploitable est ignorée au lieu de faire échouer le démarrage :
+ * une faute de frappe dans cette variable ne doit jamais empêcher l'API de
+ * répondre (c'était le cas de figure qui coupait la synchronisation avec une
+ * liste blanche trop restrictive).
+ */
+function parseCorsOrigins(value) {
+  const raw = String(value === undefined || value === null ? '' : value).trim();
+  if (!raw || raw === '*' || raw.toLowerCase() === 'false') return '*';
+  return raw
+    .split(',')
+    .map((entry) => normalizeOrigin(entry))
+    .filter(Boolean);
+}
+
+/** Ramène une entrée de configuration à son origine (`scheme://host[:port]`). */
+function normalizeOrigin(entry) {
+  const trimmed = String(entry).trim();
+  if (!trimmed || trimmed === '*') return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    return new URL(withScheme).origin;
+  } catch {
+    return null;
+  }
+}
+
+const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
+
 const config = {
   port: Number(process.env.PORT || 4000),
   dbPath: process.env.DB_PATH || path.join(__dirname, '..', 'data', 'scoot.db'),
@@ -54,8 +89,16 @@ const config = {
   jwtTtl: JWT_TTL,
   jwtTtlSeconds: ttlToSeconds(JWT_TTL, 365 * 86400),
   jwtRefreshGraceSeconds: ttlToSeconds(JWT_REFRESH_GRACE, 2 * 365 * 86400),
-  corsOrigin: process.env.CORS_ORIGIN || '*',
+  /** Origines autorisées : `'*'` ou tableau normalisé. */
+  corsOrigins,
+  /**
+   * Mode strict : refuse réellement les origines hors liste. Désactivé par
+   * défaut — l'API s'authentifie par en-tête `Authorization` (aucun cookie),
+   * donc refléter l'origine ne crée pas de risque CSRF, alors qu'un refus
+   * silencieux casse toute la synchronisation de l'app web.
+   */
+  corsStrict: String(process.env.CORS_STRICT).toLowerCase() === 'true',
   seedOnStart: String(process.env.SEED_ON_START).toLowerCase() !== 'false',
 };
 
-module.exports = { config, ttlToSeconds };
+module.exports = { config, ttlToSeconds, parseCorsOrigins };

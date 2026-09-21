@@ -85,7 +85,10 @@ docker run -p 4000:4000 -v scoot-data:/app/data scoot-master-api
 ### 2.6 Production
 
 - `JWT_SECRET` : chaîne longue aléatoire (`openssl rand -hex 32`).
-- `CORS_ORIGIN` : origine de l'app (ou l'API est appelée côté native, peu sensible).
+- `CORS_ORIGIN` : gardez `*`. L'API s'authentifie par en-tête `Authorization`
+  (aucun cookie) : refléter l'origine n'ouvre pas de faille CSRF, alors qu'une
+  liste blanche trop restrictive coupe la synchronisation (`CORS_STRICT=true`
+  pour durcir, uniquement si la liste est vérifiée).
 - Base PostgreSQL : utiliser le DDL `docs/sql/postgresql_schema.sql` et remplacer
   l'adaptateur `src/db/connection.js` (l'interface `prepare/get/all/run/exec/
   transaction/close` est volontairement fine et portable).

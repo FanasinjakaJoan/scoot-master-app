@@ -238,7 +238,8 @@ Si vous préférez créer les services à la main :
 | `JWT_TTL` | `30d` (défaut) | Durée de validité du token. L'app le renouvelle en arrière-plan : l'utilisateur reste connecté jusqu'à sa déconnexion | Non |
 | `JWT_REFRESH_GRACE` | `60d` (défaut) | Délai pendant lequel un token expiré reste **renouvelable** (appareil resté hors ligne). Au-delà : reconnexion | Non |
 | `SEED_ON_START` | `true` puis `false` | Sème la base si vide. Idempotent. Mettez `true` au premier déploiement, vous pouvez passer à `false` après pour éviter tout risque, mais `true` reste sûr | Recommandé `true` au début |
-| `CORS_ORIGIN` | `*` ou `https://...` | Origines autorisées. `*` pour dev, en prod mettez l'URL du web | Oui |
+| `CORS_ORIGIN` | `*` (recommandé) | Origines autorisées. **Laissez `*`** : l'app web peut être redirigée par l'edge Render vers le domaine de l'API, ce qui rend l'appel cross-origin (voir « CORS et synchronisation » ci-dessous) | Recommandé `*` |
+| `CORS_STRICT` | `false` | `true` refuse réellement les origines hors `CORS_ORIGIN` (le navigateur bloque alors la réponse). À n'activer que si `CORS_ORIGIN` est sûr et complet | Non |
 | `DB_PATH` | `/app/data/scoot.db` | Chemin SQLite sur disque persistant | Oui |
 | `SEED_ON_START` | `true` | Voir ci-dessus | |
 
@@ -252,9 +253,46 @@ Si vous préférez créer les services à la main :
 | `EXPO_PUBLIC_API_URL` | `""` (vide, via ARG dans Dockerfile) | Doit rester vide pour utiliser des chemins relatifs `/api` |
 
 **Sécurité :**
-- Changez `CORS_ORIGIN` en prod : `https://scoot-master-web.onrender.com` (ou votre domaine custom)
+- Laissez `CORS_ORIGIN=*` (défaut). L'API n'utilise **aucun cookie** : l'authentification passe uniquement par l'en-tête `Authorization: Bearer <JWT>`, qu'un site tiers ne peut ni lire ni rejouer. Refléter l'origine n'ouvre donc aucune faille CSRF, alors qu'une liste blanche incomplète coupe la synchronisation (voir « CORS et synchronisation »).
+- `CORS_STRICT=true` durcit le comportement si vous voulez vraiment une liste blanche stricte. À réserver aux déploiements où `CORS_ORIGIN` est vérifié.
 - `JWT_SECRET` doit être long et aléatoire (Render le génère). Ne le committez jamais.
 - Pour forcer une rotation de secret : Dashboard → API service → Environment → `JWT_SECRET` → régénérer → redéployer (tous les utilisateurs seront déconnectés).
+
+### CORS et synchronisation
+
+L'app web appelle l'API en chemins relatifs (`/api/...`) et `deploy/web-server.js`
+est censé les relayer en réseau privé (même origine ⇒ pas de CORS).
+
+En pratique, l'edge de l'hébergeur intercepte ces chemins et répond par une
+**redirection** `301`/`307` vers le domaine public de l'API
+(`https://scoot-master-api.onrender.com/api/...`). L'appel devient donc
+**cross-origin** dans le navigateur :
+
+```bash
+# constaté en production
+curl -s -o /dev/null -D - https://scoot-master-web.onrender.com/api/health
+# HTTP/2 301 → location: https://scoot-master-api.onrender.com/api/health
+
+# et un pré-vol ne doit PAS suivre une redirection :
+curl -s -o /dev/null -D - -X OPTIONS https://scoot-master-web.onrender.com/api/sync/push \
+  -H 'Origin: https://scoot-master-web.onrender.com' \
+  -H 'Access-Control-Request-Method: POST'
+# HTTP/2 307 → location: https://scoot-master-api.onrender.com/api/sync/push  (au lieu de 204)
+```
+
+Sans `Access-Control-Allow-Origin` sur la réponse finale, le navigateur **bloque**
+la réponse : la connexion, le push/pull de synchronisation et le téléversement de
+sauvegarde échouent avec un message vu comme un **403**.
+
+L'API renvoie donc désormais `Access-Control-Allow-Origin` de façon fiable
+(`backend/src/middleware/cors.js`), pour toute origine, et répond elle-même au
+pré-vol avec `204`. Diagnostic rapide :
+
+```bash
+curl -s -o /dev/null -D - https://scoot-master-api.onrender.com/api/health \
+  -H 'Origin: https://scoot-master-web.onrender.com' | grep -i access-control
+# doit contenir : access-control-allow-origin: https://scoot-master-web.onrender.com
+```
 
 ---
 
@@ -350,7 +388,7 @@ npx expo start
 | Déconnexion après une nuit hors ligne | Jeton expiré au-delà de `JWT_REFRESH_GRACE` | Augmentez `JWT_REFRESH_GRACE` (défaut `60d`). En deçà, l'app renouvelle seule la session au retour du réseau |
 | Build web échoue `expo export` | Mémoire insuffisante (Free plan) | Passez le web en Starter (512 MB → 1 GB RAM). Ou augmentez `NODE_OPTIONS=--max-old-space-size=2048` en env var |
 | Base vide, pas de comptes | `SEED_ON_START=false` au premier démarrage | Mettez `SEED_ON_START=true`, redéployez. Vérifiez logs : seed ne s'exécute que si `users` vide |
-| CORS error depuis le web | `CORS_ORIGIN` trop restrictif | Si le web passe par le proxy `/api`, CORS ne devrait pas se déclencher (même origine). Si vous appelez l'API directement depuis le navigateur, mettez `CORS_ORIGIN=https://scoot-master-web.onrender.com` ou `*` en dev |
+| CORS error / « 403 » depuis le web | `CORS_ORIGIN` trop restrictif, ou l'edge redirige `/api/*` vers l'API (appel cross-origin) | L'API renvoie désormais toujours `Access-Control-Allow-Origin` (auth par en-tête, sans cookie). Vérifiez avec `curl … -H 'Origin: https://scoot-master-web.onrender.com'` (voir « CORS et synchronisation »). Si le pré-vol `OPTIONS /api/sync/push` renvoie `307` au lieu de `204`, l'appel ne peut pas aboutir : gardez `CORS_ORIGIN=*` et n'activez pas `CORS_STRICT` |
 | Disque plein | Trop de données / photos base64 | SQLite stocke les photos en JSON `[]` (chemins). Si vous stockez des base64, le disque grossit vite. Passez à un stockage S3/R2 pour les photos. Augmentez `sizeGB` dans `render.yaml` |
 
 **Commandes utiles (Shell Render) :**

@@ -87,3 +87,42 @@ describe('lib/jwt — tolérance d’horloge et renouvellement', () => {
     expect(needsRefresh(makeToken({ exp: sec(Date.now() + 6 * 3600 * 1000) }))).toBe(false); // 6 h
   });
 });
+
+/**
+ * Régression build natif : le décodage ne doit dépendre NI de `Buffer` (module
+ * absent du bundle Metro → « Unable to resolve module buffer » → build APK en
+ * échec), NI de `atob` (indisponible sur certaines versions d'Hermes).
+ */
+describe('lib/jwt — décodage autonome (sans Buffer ni atob)', () => {
+  const withoutGlobals = <T>(fn: () => T): T => {
+    const g = globalThis as unknown as Record<string, unknown>;
+    const savedAtob = g.atob;
+    const savedBuffer = g.Buffer;
+    delete g.atob;
+    delete g.Buffer;
+    try {
+      return fn();
+    } finally {
+      g.atob = savedAtob;
+      g.Buffer = savedBuffer;
+    }
+  };
+
+  it('décode un payload accentué sans Buffer ni atob', () => {
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const payload = { sub: 'u-é', username: 'admin', fullName: 'Fana Rakoto (Admin) — Béta', role: 'admin', exp };
+    const token = makeToken(payload);
+    const decoded = withoutGlobals(() => decodeJwt(token));
+    expect(decoded).toMatchObject(payload);
+  });
+
+  it('conserve les accents et emoji d’un nom complet', () => {
+    const token = makeToken({ fullName: 'Élise Râteau 🏍️ 日本語', exp: 9999999999 });
+    expect(withoutGlobals(() => decodeJwt(token))?.fullName).toBe('Élise Râteau 🏍️ 日本語');
+  });
+
+  it('rejette toujours un jeton malformé', () => {
+    expect(withoutGlobals(() => decodeJwt('pas.un.jwt'))).toBeNull();
+    expect(withoutGlobals(() => decodeJwt(null))).toBeNull();
+  });
+});
