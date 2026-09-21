@@ -70,7 +70,13 @@ services:
       - key: SEED_ON_START
         value: "true" # idempotent : ne sème que si la base est vide (admin/admin123, vendeur/vendeur123)
       - key: CORS_ORIGIN
-        value: "*" # en prod, remplacez par https://scoot-master-web.onrender.com
+        # Gardez "*" : l'edge Render redirige /api/* vers le domaine public de
+        # l'API, ce qui rend l'appel du web CROSS-ORIGIN. Une liste blanche
+        # (ou une valeur mal saisie) coupe alors toute la synchronisation, vue
+        # comme une erreur 403 dans le navigateur. L'API s'authentifie par
+        # en-tête Authorization (aucun cookie) : refléter l'origine n'expose à
+        # aucun CSRF. Voir backend/src/middleware/cors.js et docs/RENDER.md.
+        value: "*"
       - key: DB_PATH
         value: /app/data/scoot.db # chemin sur le disque persistant
     disk:

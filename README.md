@@ -328,7 +328,9 @@ Résumé (détail : [docs/SYNC.md](docs/SYNC.md)) :
   et le rôle autorisé est celui de la base — pas celui revendiqué dans le jeton.
 - Rôles : `admin` (suppressions, validation de conflits, sauvegardes serveur) et
   `seller` (catalogue, ventes, clients).
-- En production : changer `JWT_SECRET`, activer HTTPS, restreindre `CORS_ORIGIN`.
+- En production : changer `JWT_SECRET`, activer HTTPS. Laissez `CORS_ORIGIN=*` :
+  l'API s'authentifie par en-tête (aucun cookie), et une liste blanche coupe la
+  synchronisation dès que l'app web est servie sur une origine différente de l'API.
 
 ### Comprendre un `401` dans la console du navigateur
 

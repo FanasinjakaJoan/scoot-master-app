@@ -1,11 +1,11 @@
 'use strict';
 
 const express = require('express');
-const cors = require('cors');
 const { config } = require('./config');
+const { corsMiddleware } = require('./middleware/cors');
 const { errorHandler } = require('./middleware/error');
 
-  const authRoutes = require('./routes/auth');
+const authRoutes = require('./routes/auth');
 const bikeRoutes = require('./routes/bikes');
 const customerRoutes = require('./routes/customers');
 const saleRoutes = require('./routes/sales');
@@ -16,15 +16,28 @@ const userRoutes = require('./routes/users');
 /**
  * Fabrique l'application Express (séparable du serveur pour les tests).
  * @param {import('better-sqlite3').Database} db
+ * @param {{ corsOrigins?: string[]|'*', corsStrict?: boolean }} [options]
+ *   surcharge CORS pour les tests ; par défaut la configuration d'environnement.
  */
-function createApp(db) {
+function createApp(db, options = {}) {
+  const corsOrigins = options.corsOrigins ?? config.corsOrigins;
+  const corsStrict = options.corsStrict ?? config.corsStrict;
   const app = express();
   app.disable('x-powered-by');
   // Base portée par l'application : le middleware d'authentification y relit le
   // compte à chaque requête (révocation effective, rôle lu en base et non dans
   // le jeton) sans que chaque route ait à lui transmettre `db`.
   app.locals.db = db;
-  app.use(cors({ origin: config.corsOrigin === '*' ? true : config.corsOrigin.split(',') }));
+  // CORS AVANT les routes : l'app web déployée appelle l'API en cross-origin
+  // (l'edge de l'hébergeur redirige /api/* vers le domaine de l'API). Sans
+  // `Access-Control-Allow-Origin`, le navigateur bloque la réponse et la
+  // synchronisation échoue en « 403 ». Voir middleware/cors.js.
+  app.use(
+    corsMiddleware(corsOrigins, {
+      strict: corsStrict,
+      warn: (message) => console.warn('[cors]', message),
+    })
+  );
   app.use(express.json({ limit: '5mb' }));
 
   // --- Statut / diagnostic (sans auth, pour les moniteurs) ---

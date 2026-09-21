@@ -70,6 +70,14 @@ jobs:
         run: npx tsc --noEmit
       - name: Tests unitaires
         run: npx jest --ci
+      # Le bundle natif est vérifié ICI, pas seulement dans le workflow APK :
+      # un import non résoluble par Metro (ex. `require('buffer')`) casse le build
+      # Android après ~10 min de Gradle. Cette étape échoue en quelques secondes.
+      - name: Bundle natif Android (expo export — détecte les imports non résolubles)
+        run: npx expo export --platform android --output-dir /tmp/android-bundle
+        env:
+          CI: 1
+          EXPO_NO_TELEMETRY: 1
 
   web-render:
     name: 💨 Rendu de l'app web (build + smoke test en DOM simulé)

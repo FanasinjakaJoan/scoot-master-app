@@ -14,16 +14,60 @@ export interface JwtPayload {
   iat?: number;
 }
 
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/**
+ * Décodage base64url → texte UTF-8, SANS dépendre de `atob` ni de `Buffer`.
+ *
+ * `require('buffer')` faisait échouer le bundle natif (Metro : « Unable to
+ * resolve module buffer ») et donc le build APK Android, tandis qu'`atob`
+ * n'existe pas sur toutes les versions d'Hermes. Ce décodeur pur JS couvre les
+ * deux plateformes. Il produit directement du texte UTF-8 (et non une chaîne
+ * binaire) : les payloads JWT contiennent des accents (`fullName`) qu'un
+ * `JSON.parse` sur des octets bruts corromprait.
+ */
 function base64UrlDecode(part: string): string {
-  const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-  if (typeof globalThis.atob === 'function') {
-    return globalThis.atob(padded);
+  const b64 = part.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (const char of b64) {
+    const value = B64_ALPHABET.indexOf(char);
+    if (value < 0) continue; // caractère hors alphabet : ignoré
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 0xff);
+    }
   }
-  // Repli natif (Hermes n'expose pas atob sur toutes les versions)
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Buffer } = require('buffer') as typeof import('buffer');
-  return Buffer.from(padded, 'base64').toString('utf8');
+  return utf8Decode(bytes);
+}
+
+/** Assemble des octets UTF-8 en chaîne JS (gère les séquences multi-octets). */
+function utf8Decode(bytes: number[]): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    const b0 = bytes[i];
+    if (b0 < 0x80) {
+      out += String.fromCharCode(b0);
+      continue;
+    }
+    let codePoint = 0;
+    let extra = 0;
+    if ((b0 & 0xe0) === 0xc0) { codePoint = b0 & 0x1f; extra = 1; }
+    else if ((b0 & 0xf0) === 0xe0) { codePoint = b0 & 0x0f; extra = 2; }
+    else if ((b0 & 0xf8) === 0xf0) { codePoint = b0 & 0x07; extra = 3; }
+    else { out += String.fromCharCode(b0); continue; }
+    for (let k = 1; k <= extra; k++) {
+      const next = bytes[i + k];
+      if (next === undefined) { extra = 0; break; }
+      codePoint = (codePoint << 6) | (next & 0x3f);
+    }
+    i += extra;
+    out += String.fromCodePoint(codePoint);
+  }
+  return out;
 }
 
 /** Décode le payload d'un JWT ; renvoie null si malformé. */

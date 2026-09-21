@@ -10,13 +10,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test tests/auth.test.js tests/session.test.js tests/users.test.js tests/api.test.js tests/sync.test.js",
+    "test": "node --test tests/auth.test.js tests/session.test.js tests/users.test.js tests/api.test.js tests/sync.test.js tests/cors.test.js",
     "check:api": "node scripts/check-api.mjs"
   },
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^3.0.2",
-    "cors": "^2.8.5",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2"
   }
