@@ -2,3 +2,8 @@ node_modules/
 data/
 storage/
 .env
+
+# Clé de compte de service Firebase / GCP
+*serviceAccount*.json
+*service-account*.json
+*firebase-adminsdk*.json

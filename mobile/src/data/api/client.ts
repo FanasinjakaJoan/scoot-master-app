@@ -178,6 +178,63 @@ export function uploadBackup(token: string, fileName: string, data: unknown): Pr
   return apiCall<{ ok: boolean; file: string }>(token, 'POST', '/api/exports/backup', { fileName, data });
 }
 
+// ---------------------------------------------------------------------
+// Sauvegarde Firebase (Cloud Storage) — déclenchement et restauration
+// ---------------------------------------------------------------------
+
+export interface FirebaseBackupRun {
+  id: string;
+  reason: 'scheduled' | 'manual';
+  actor: string | null;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  size: number | null;
+  status: 'success' | 'failure' | 'skipped';
+  path: string | null;
+  kind?: 'json' | 'firestore';
+  attempts?: number;
+  counts?: Record<string, number>;
+  error: string | null;
+}
+
+export interface FirebaseBackupStatus {
+  enabled: boolean;
+  ready: boolean;
+  bucket: string | null;
+  prefix: string;
+  intervalHours: number;
+  retention: number;
+  mode: 'json' | 'firestore';
+  running: boolean;
+  lastRun: FirebaseBackupRun | null;
+  history: FirebaseBackupRun[];
+}
+
+/** État et historique de la sauvegarde Firebase (admin). */
+export function firebaseBackupStatus(token: string): Promise<FirebaseBackupStatus> {
+  return apiCall<FirebaseBackupStatus>(token, 'GET', '/api/exports/backups/firebase');
+}
+
+/** Objets de sauvegarde présents dans le bucket (admin). */
+export function firebaseBackupFiles(token: string): Promise<{ items: { path: string; size: number; updatedAt: string | null }[] }> {
+  return apiCall<{ items: { path: string; size: number; updatedAt: string | null }[] }>(
+    token, 'GET', '/api/exports/backups/firebase/files'
+  );
+}
+
+/** Déclenche une sauvegarde immédiate vers Firebase (admin). */
+export function runFirebaseBackup(token: string, body?: { kind?: 'json' | 'firestore'; collectionIds?: string[] }): Promise<FirebaseBackupRun> {
+  return apiCall<FirebaseBackupRun>(token, 'POST', '/api/exports/backups/firebase', body ?? {});
+}
+
+/** Restaure un fichier de sauvegarde précis depuis le bucket (admin). */
+export function restoreFirebaseBackup(token: string, path: string): Promise<{ ok: boolean; path: string; applied: Record<string, number> }> {
+  return apiCall<{ ok: boolean; path: string; applied: Record<string, number> }>(
+    token, 'POST', '/api/exports/backups/firebase/restore', { path }
+  );
+}
+
 export function serverStatus(token: string): Promise<{ ok: boolean; service: string; time: string }> {
   return apiCall<{ ok: boolean; service: string; time: string }>(token ?? '', 'GET', '/api/health');
 }

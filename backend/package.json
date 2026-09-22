@@ -10,13 +10,14 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test tests/auth.test.js tests/session.test.js tests/users.test.js tests/api.test.js tests/sync.test.js tests/cors.test.js tests/web-proxy.test.js",
+    "test": "node --test tests/auth.test.js tests/session.test.js tests/users.test.js tests/api.test.js tests/sync.test.js tests/cors.test.js tests/web-proxy.test.js tests/backup-firebase.test.js",
     "check:api": "node scripts/check-api.mjs"
   },
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "express": "^4.21.2",
+    "firebase-admin": "^14.4.0",
     "jsonwebtoken": "^9.0.2"
   }
 }

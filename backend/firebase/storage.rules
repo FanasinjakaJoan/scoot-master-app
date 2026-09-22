@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Règles Firebase Storage — accès aux sauvegardes réservé aux administrateurs.
+//
+// Principe : tout est refusé par défaut. Seuls les comptes portant le custom
+// claim `admin` peuvent lire ou écrire sous `backups/`. Le compte de service
+// utilisé par le backend (Cloud Function / API Render) porte le rôle IAM
+// « Storage Object Admin » et contourne ces règles — elles protègent l'accès
+// depuis un client (SDK web/mobile), qu'il soit authentifié ou non.
+//
+// Déploiement : `firebase deploy --only storage` (nécessite firebase-tools).
+// Pour poser le claim depuis le backend :
+//   admin.auth().setCustomUserClaims(uid, { admin: true })
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Sauvegardes : lecture et écriture réservées aux admins.
+    match /backups/{file=**} {
+      allow read, write: if request.auth != null && request.auth.token.admin == true;
+    }
+
+    // Tout le reste est explicitement interdit (défaut « deny »).
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

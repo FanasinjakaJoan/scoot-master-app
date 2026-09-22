@@ -1,4 +1,5 @@
-import { pushOperations, pullChanges, uploadBackup, ApiError } from '../api/client';
+import { pushOperations, pullChanges, uploadBackup, firebaseBackupStatus, firebaseBackupFiles, runFirebaseBackup, restoreFirebaseBackup, ApiError } from '../api/client';
+import type { FirebaseBackupStatus, FirebaseBackupRun } from '../api/client';
 import { localDb } from '../local/db';
 import * as repo from '../local/repositories';
 import { PUSH_BATCH_SIZE, MAX_ATTEMPTS } from '../../lib/config';
@@ -443,4 +444,54 @@ export async function uploadLocalBackup(token: string, fileName: string, keeper?
     }
     throw e;
   }
+}
+
+// ---------------------------------------------------------------------
+// Sauvegarde Firebase — déclenchement manuel et restauration (admin)
+// ---------------------------------------------------------------------
+
+/**
+ * Exécute un appel admin en maintenant la session (renouvellement proactif puis
+ * réactif), avec un message d'erreur explicite en cas d'interruption réseau.
+ */
+async function withSession<T>(token: string, keeper: SyncSessionKeeper | undefined, call: (t: string) => Promise<T>): Promise<T> {
+  const auth: CycleAuth = { keeper, renewed: false, refused: false };
+  let current = await maybeProactiveRefresh(token, auth);
+  try {
+    return await call(current);
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 0)) {
+      const healed = await tryHealSession(auth);
+      if (healed) {
+        current = healed;
+        return await call(current);
+      }
+      throw new Error('Sauvegarde Firebase en attente — interruption temporaire, réessai planifié.');
+    }
+    throw e;
+  }
+}
+
+/** État et historique de la sauvegarde Firebase (admin). */
+export function readFirebaseBackupStatus(token: string, keeper?: SyncSessionKeeper): Promise<FirebaseBackupStatus> {
+  return withSession(token, keeper, (t) => firebaseBackupStatus(t));
+}
+
+/**
+ * Déclenche une sauvegarde immédiate vers Firebase (admin). Le serveur répond
+ * `status: 'success' | 'failure' | 'skipped'` ; une erreur réseau lève, un échec
+ * distant est renvoyé tel quel pour que l'interface affiche la raison.
+ */
+export function triggerFirebaseBackup(token: string, keeper?: SyncSessionKeeper): Promise<FirebaseBackupRun> {
+  return withSession(token, keeper, (t) => runFirebaseBackup(t));
+}
+
+/** Sauvegarde Firebase : restauration d'un fichier précis (admin). */
+export function listFirebaseBackups(token: string, keeper?: SyncSessionKeeper): Promise<{ path: string; size: number; updatedAt: string | null }[]> {
+  return withSession(token, keeper, (t) => firebaseBackupFiles(t).then((r) => r.items));
+}
+
+/** Restaure un fichier de sauvegarde Firebase précis (admin). */
+export function restoreFirebase(token: string, path: string, keeper?: SyncSessionKeeper): Promise<{ ok: boolean; path: string; applied: Record<string, number> }> {
+  return withSession(token, keeper, (t) => restoreFirebaseBackup(t, path));
 }
