@@ -18,6 +18,7 @@
 
 const crypto = require('crypto');
 const { allocateSaleNumber } = require('../util/ids');
+const { isAdmin, audit } = require('../security/rls');
 
 const ENTITY_FIELDS = {
   bikes: [
@@ -98,6 +99,30 @@ function applySaleSideEffects(db, saleId, status) {
 }
 
 /**
+ * Vérifie que le client et les motos référencés par une opération de vente sont
+ * dans le périmètre de l'utilisateur (propriétaire, ou global pour un admin).
+ * Lève une erreur d'application (`status: 400` côté route) sinon.
+ */
+function assertSaleRefsInScope(db, payload, user, ownerId) {
+  const inScope = (row) => row && (user.role === 'admin' || row.owner_id === ownerId);
+  if (payload.customer_id) {
+    const customer = db.prepare('SELECT id, owner_id FROM customers WHERE id = ?').get(payload.customer_id);
+    if (!inScope(customer)) {
+      throw Object.assign(new Error('Client introuvable : ' + payload.customer_id), { status: 400 });
+    }
+  }
+  if (Array.isArray(payload.items)) {
+    for (const it of payload.items) {
+      if (!it || !it.bike_id) continue;
+      const bike = db.prepare('SELECT id, owner_id FROM bikes WHERE id = ?').get(it.bike_id);
+      if (!inScope(bike)) {
+        throw Object.assign(new Error('Moto introuvable : ' + it.bike_id), { status: 400 });
+      }
+    }
+  }
+}
+
+/**
  * Applique UNE opération de push. Retourne l'objet de résultat pour la réponse.
  * (À appeler dans une transaction — gérée par pushOperations.)
  */
@@ -114,6 +139,20 @@ function applyOperation(db, entity, opIn, ctx) {
   const force = Boolean(opIn.force) && user.role === 'admin';
   const clientTs = opIn.clientTs || (opIn.payload && opIn.payload.updated_at) || new Date().toISOString();
   const row = db.prepare(`SELECT * FROM ${entity} WHERE id = ?`).get(opIn.id);
+
+  // ---- Isolation (Row-Level Security) ----
+  // Un vendeur ne peut toucher qu'une ligne dont il est propriétaire. Une ligne
+  // d'autrui est traitée comme inexistante : l'opération est refusée plutôt que
+  // d'écraser les données d'un autre utilisateur. L'admin contourne ce filtre
+  // (accès global), ce qui est journalisé dans `audit_log`.
+  const adminBypass = isAdmin(user) && row && row.owner_id && row.owner_id !== user.id;
+  if (row && !isAdmin(user) && row.owner_id !== user.id) {
+    audit(db, { req: { user }, action: 'sync.forbidden', entity, entityId: opIn.id, ownerId: row.owner_id, details: { op: opIn.op } });
+    return { ...base, status: 'error', error: 'Droits insuffisants : cette donnée appartient à un autre utilisateur.' };
+  }
+  if (adminBypass) {
+    audit(db, { req: { user }, action: 'sync.admin_bypass', entity, entityId: opIn.id, ownerId: row.owner_id, details: { op: opIn.op } });
+  }
 
   // ---- suppression (tombstone) ----
   if (op === 'delete') {
@@ -134,6 +173,11 @@ function applyOperation(db, entity, opIn, ctx) {
   if (entity === 'bikes' && pick.photos !== undefined && typeof pick.photos === 'object') {
     pick.photos = JSON.stringify(pick.photos);
   }
+  // Propriété : forcée par le serveur à partir de l'utilisateur authentifié.
+  // `owner_id` n'est jamais repris du payload pour un vendeur (sinon il pourrait
+  // s'attribuer la propriété d'une ligne au nom d'un autre) ; un admin peut en
+  // revanche créer/modifier au nom d'un autre compte.
+  const ownerId = isAdmin(user) ? (payload.owner_id || (row && row.owner_id) || user.id) : user.id;
   // Vente : le numéro de bon de commande (`BC-AAAA-NNNN`) est attribué par le
   // serveur **à la création uniquement**. `sale_number` ne fait pas partie de
   // ENTITY_FIELDS : sans la garde `!row`, chaque mise à jour d'une vente
@@ -149,8 +193,12 @@ function applyOperation(db, entity, opIn, ctx) {
   const keys = Object.keys(pick);
 
   if (!row) {
-    const cols = ['id', 'created_at', 'updated_at', 'version', 'created_by', 'updated_by', 'device_id', 'deleted_at'];
-    const vals = [opIn.id, payload.created_at || clientTs, clientTs, 1, user.id, user.id, deviceId, payload.deleted_at || null];
+    // Références d'une vente : le client et les motos doivent être dans le
+    // périmètre de l'appelant (sauf admin) — empêche un vendeur de vendre le
+    // stock d'autrui en forgeant une opération hors ligne.
+    if (entity === 'sales') assertSaleRefsInScope(db, payload, user, ownerId);
+    const cols = ['id', 'created_at', 'updated_at', 'version', 'created_by', 'updated_by', 'owner_id', 'device_id', 'deleted_at'];
+    const vals = [opIn.id, payload.created_at || clientTs, clientTs, 1, user.id, user.id, ownerId, deviceId, payload.deleted_at || null];
     const sql = `INSERT INTO ${entity} (${[...keys, ...cols].join(', ')}) VALUES (${keys.map(() => '?').join(', ')} , ${cols.map(() => '?').join(', ')})`;
     db.prepare(sql).run(...keys.map((k) => pick[k]), ...vals);
   } else {
@@ -166,9 +214,10 @@ function applyOperation(db, entity, opIn, ctx) {
     if (!force && !wins) {
       return { ...base, status: 'conflict', server: serializeByEntity(db, entity, row), reason: 'serveur-plus-recent' };
     }
+    if (entity === 'sales') assertSaleRefsInScope(db, payload, user, row.owner_id || ownerId);
     const setSql = keys.length ? keys.map((k) => `${k} = ?`).join(', ') + ', ' : '';
-    db.prepare(`UPDATE ${entity} SET ${setSql}updated_at = ?, updated_by = ?, device_id = ?, version = version + 1 WHERE id = ?`)
-      .run(...keys.map((k) => pick[k]), clientTs, user.id, deviceId, opIn.id);
+    db.prepare(`UPDATE ${entity} SET ${setSql}updated_at = ?, updated_by = ?, owner_id = ?, device_id = ?, version = version + 1 WHERE id = ?`)
+      .run(...keys.map((k) => pick[k]), clientTs, user.id, ownerId, deviceId, opIn.id);
     if (pick.deleted_at === null) db.prepare(`UPDATE ${entity} SET deleted_at = NULL WHERE id = ?`).run(opIn.id);
   }
 
@@ -229,8 +278,12 @@ function pushOperations(db, { user, deviceId, operations }) {
 /**
  * PULL : changes depuis `since` (ou tout si absent), paginé par curseur clé.
  * Le curseur encode (updated_at, id) en base64 → pagination sans doublons ni trous.
+ *
+ * Isolation : un utilisateur non-admin ne reçoit QUE ses propres lignes
+ * (`owner_id = user.id`). Pour un admin, aucun filtre n'est appliqué (accès
+ * global). L'utilisateur est passé dans `opts.user`.
  */
-function pullChanges(db, { since, cursor, limit = 500 }) {
+function pullChanges(db, { since, cursor, limit = 500, user } = {}) {
   const maxLimit = Math.min(Number(limit) || 500, 2000);
   let anchorTs = since || '1970-01-01T00:00:00.000Z';
   let anchorId = '';
@@ -241,15 +294,18 @@ function pullChanges(db, { since, cursor, limit = 500 }) {
     } catch { /* curseur invalide → on repart depuis `since` */ }
   }
 
+  const scoped = user && !isAdmin(user);
   const changes = [];
   for (const entity of ENTITIES) {
+    const where = ['((updated_at > ?) OR (updated_at = ? AND id > ?))'];
+    const args = [anchorTs, anchorTs, anchorId];
+    if (scoped) { where.push('owner_id = ?'); args.push(user.id); }
     const rows = db.prepare(`
       SELECT * FROM ${entity}
-      WHERE (updated_at > ?)
-         OR (updated_at = ? AND id > ?)
+      WHERE ${where.join(' AND ')}
       ORDER BY updated_at ASC, id ASC
       LIMIT ?
-    `).all(anchorTs, anchorTs, anchorId, maxLimit * 3);
+    `).all(...args, maxLimit * 3);
 
     for (const row of rows) {
       const isDeleted = row.deleted_at && row.deleted_at > anchorTs;

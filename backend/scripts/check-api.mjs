@@ -135,11 +135,27 @@ check('push plus ancien → conflit LWW', pushOlder.body?.results?.[0]?.status =
   `status=${pushOlder.body?.results?.[0]?.status}, prix serveur=${pushOlder.body?.results?.[0]?.server?.price}`);
 
 // ---------- 7. force : réservé admin ----------
+// Le vendeur opère sur SA propre moto (isolation par `owner_id`). On la crée
+// d'abord, puis on pousse une mise à jour plus ancienne → conflit LWW.
+const sellerBikeId = uuid();
+const pushSellerBike = await req('POST', '/api/sync/push', {
+  token: tSeller,
+  body: {
+    deviceId: 'device-e2e-S',
+    operations: [{
+      entity: 'bikes', op: 'create', id: sellerBikeId, clientTs: iso(),
+      payload: { brand: 'Suzuki', model: 'V-Strom', year: 2020, price: 5000000, status: 'available' },
+    }],
+  },
+});
+check('push création par le vendeur (propriété forcée)', pushSellerBike.body?.results?.[0]?.status === 'ok',
+  `status=${pushSellerBike.body?.results?.[0]?.status}`);
+
 const forceSeller = await req('POST', '/api/sync/push', {
   token: tSeller,
   body: {
-    deviceId: 'device-e2e-B',
-    operations: [{ entity: 'bikes', op: 'update', id: syncBikeId, clientTs: iso(-60000), force: true, payload: { price: 999 } }],
+    deviceId: 'device-e2e-S',
+    operations: [{ entity: 'bikes', op: 'update', id: sellerBikeId, clientTs: iso(-60000), force: true, payload: { price: 999 } }],
   },
 });
 check('force ignoré pour un vendeur', forceSeller.body?.results?.[0]?.status === 'conflict',
@@ -148,28 +164,54 @@ check('force ignoré pour un vendeur', forceSeller.body?.results?.[0]?.status ==
 const forceAdmin = await req('POST', '/api/sync/push', {
   token: tAdmin,
   body: {
-    deviceId: 'device-e2e-B',
-    operations: [{ entity: 'bikes', op: 'update', id: syncBikeId, clientTs: iso(-60000), force: true, payload: { price: 2222222 } }],
+    deviceId: 'device-e2e-S',
+    operations: [{ entity: 'bikes', op: 'update', id: sellerBikeId, clientTs: iso(-60000), force: true, payload: { price: 2222222 } }],
   },
 });
 check('force admin applique sa version', forceAdmin.body?.results?.[0]?.status === 'ok'
   && forceAdmin.body.results[0].server?.price === 2222222, `prix=${forceAdmin.body?.results?.[0]?.server?.price}`);
 
 // ---------- 8. idempotence (pas de faux conflit) ----------
+// Même valeur que l'état serveur courant de la moto admin (3500000) → idempotent.
 const idem = await req('POST', '/api/sync/push', {
   token: tAdmin,
   body: {
     deviceId: 'device-e2e-B',
-    operations: [{ entity: 'bikes', op: 'update', id: syncBikeId, clientTs: iso(-120000), payload: { price: 2222222 } }],
+    operations: [{ entity: 'bikes', op: 'update', id: syncBikeId, clientTs: iso(-120000), payload: { price: 3500000 } }],
   },
 });
 check('opération identique = idempotente (ok)', idem.body?.results?.[0]?.status === 'ok'
   && idem.body.results[0].idempotent === true, `idempotent=${idem.body?.results?.[0]?.idempotent}`);
 
-// ---------- 9. ventes + effets de domaine ----------
-const customers = await req('GET', '/api/customers', { token: tAdmin });
-const customerId = (customers.body?.items ?? customers.body?.data ?? [])[0]?.id;
-check('GET /api/customers (seed)', !!customerId, `client=${customerId ? customerId.slice(0, 8) + '…' : 'aucun'}`);
+// ---------- 8b. isolation : un vendeur ne voit pas les données de l'admin ----------
+const sellerPull = await req('GET', '/api/sync/pull?since=' + encodeURIComponent('1970-01-01T00:00:00.000Z'), { token: tSeller });
+const sellerSeesAdminBike = (sellerPull.body?.changes || []).some((c) => c.id === syncBikeId);
+check('pull vendeur exclut les données de l\u2019admin (RLS)', !sellerSeesAdminBike,
+  `${(sellerPull.body?.changes || []).length} changements visibles pour le vendeur`);
+const sellerReadAdminBike = await req('GET', '/api/bikes/' + syncBikeId, { token: tSeller });
+check('lecture d\u2019une moto d\u2019autrui refusée (404)', sellerReadAdminBike.status === 404,
+  `status=${sellerReadAdminBike.status}`);
+
+// ---------- 9. ventes + effets de domaine (périmètre vendeur) ----------
+// Le vendeur ne peut vendre que SON stock à SES clients → on crée un client vendeur.
+const sellerCustomer = await req('POST', '/api/customers', {
+  token: tSeller,
+  body: { first_name: 'Client', last_name: 'E2E Vendeur', phone: '+261 34 00 00 09' },
+});
+const customerId = sellerCustomer.body?.customer?.id ?? sellerCustomer.body?.id;
+check('client créé par le vendeur (propriété forcée)', !!customerId,
+  `client=${customerId ? customerId.slice(0, 8) + '…' : 'aucun'}`);
+const adminNow = await req('GET', '/api/customers', { token: tAdmin });
+const sellerOwnCustomerIds = new Set(
+  (await req('GET', '/api/customers', { token: tSeller })).body?.items?.map((c) => c.id) || []
+);
+const foreignCustomer = (adminNow.body?.items ?? []).find((c) => !sellerOwnCustomerIds.has(c.id));
+check('isolation clients : le vendeur voit moins de clients que l\u2019admin',
+  (adminNow.body?.items?.length || 0) > sellerOwnCustomerIds.size,
+  `${adminNow.body?.items?.length} (admin) vs ${sellerOwnCustomerIds.size} (vendeur)`);
+const sellerReadAdminCustomer = await req('GET', '/api/customers/' + foreignCustomer?.id, { token: tSeller });
+check('lecture d\u2019un client d\u2019autrui refusée (404)', sellerReadAdminCustomer.status === 404,
+  `status=${sellerReadAdminCustomer.status}`);
 
 const saleId = uuid();
 const pushSale = await req('POST', '/api/sync/push', {
@@ -181,7 +223,7 @@ const pushSale = await req('POST', '/api/sync/push', {
       payload: {
         customer_id: customerId, status: 'confirme', sale_date: iso(),
         discount: 100000, amount_paid: 500000,
-        items: [{ id: uuid(), bike_id: syncBikeId, unit_price: 2222222, quantity: 1 }],
+        items: [{ id: uuid(), bike_id: sellerBikeId, unit_price: 2222222, quantity: 1 }],
       },
     }],
   },
@@ -192,7 +234,7 @@ check('total recalculé (prix − remise)', saleRes?.server?.total === 2222222 -
   `total=${saleRes?.server?.total}`);
 check('payment_status = partial', saleRes?.server?.payment_status === 'partial',
   `${saleRes?.server?.payment_status}`);
-const bikeAfterSale = await req('GET', '/api/bikes/' + syncBikeId, { token: tAdmin });
+const bikeAfterSale = await req('GET', '/api/bikes/' + sellerBikeId, { token: tSeller });
 check('effet de domaine : moto passée en « vendue »',
   (bikeAfterSale.body?.status ?? bikeAfterSale.body?.bike?.status) === 'sold',
   `status=${bikeAfterSale.body?.status ?? bikeAfterSale.body?.bike?.status}`);
@@ -205,7 +247,7 @@ const pushCancel = await req('POST', '/api/sync/push', {
     operations: [{ entity: 'sales', op: 'update', id: saleId, clientTs: iso(2000), payload: { status: 'annule' } }],
   },
 });
-const bikeAfterCancel = await req('GET', '/api/bikes/' + syncBikeId, { token: tAdmin });
+const bikeAfterCancel = await req('GET', '/api/bikes/' + sellerBikeId, { token: tSeller });
 check('annulation de vente → moto de nouveau disponible',
   pushCancel.body?.results?.[0]?.status === 'ok' &&
   (bikeAfterCancel.body?.status ?? bikeAfterCancel.body?.bike?.status) === 'available',
@@ -226,6 +268,20 @@ const pushSale2 = await req('POST', '/api/sync/push', {
 check('collision de numéro de bon → renumérotation',
   pushSale2.body?.results?.[0]?.status === 'ok' && pushSale2.body.results[0].saleNumber !== saleRes?.saleNumber,
   `${saleRes?.saleNumber} → ${pushSale2.body?.results?.[0]?.saleNumber}`);
+
+// ---------- 9b. vente croisée refusée (le vendeur ne vend pas le stock de l'admin) ----------
+const crossSale = await req('POST', '/api/sync/push', {
+  token: tSeller,
+  body: {
+    deviceId: 'device-e2e-A',
+    operations: [{
+      entity: 'sales', op: 'create', id: uuid(), clientTs: iso(),
+      payload: { customer_id: customerId, status: 'brouillon', sale_date: iso(), items: [{ id: uuid(), bike_id: syncBikeId, unit_price: 1, quantity: 1 }] },
+    }],
+  },
+});
+check('vente du stock d\u2019autrui refusée', crossSale.body?.results?.[0]?.status === 'error',
+  `status=${crossSale.body?.results?.[0]?.status}`);
 
 // ---------- 10. suppressions (tombstones) ----------
 const delBike = await req('POST', '/api/sync/push', {

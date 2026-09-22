@@ -70,10 +70,13 @@ function createApp(db, options = {}) {
       ['POST', '/api/sync/push', 'Synchronisation : pousser les opérations hors ligne (auth)'],
       ['GET', '/api/sync/pull?since=ISO', 'Synchronisation : tirer les changements serveur (auth)'],
       ['GET', '/api/sync/status', 'Compteurs globaux (auth)'],
-      ['GET', '/api/exports/bikes|customers|sales?format=json|csv', 'Export JSON / CSV (auth)'],
-      ['GET', '/api/exports/backup', 'Sauvegarde complète JSON (auth)'],
+      ['GET', '/api/exports/bikes|customers|sales?format=json|csv', 'Export JSON / CSV (périmètre utilisateur)'],
+      ['GET', '/api/exports/backup', 'Sauvegarde complète JSON (périmètre utilisateur)'],
       ['POST', '/api/exports/backup', 'Téléverser une sauvegarde locale (auth)'],
       ['GET', '/api/exports/backups', 'Liste des sauvegardes téléversées (admin)'],
+      ['POST', '/api/exports/backup/drive', 'Sauvegarde complète → Google Drive (admin)'],
+      ['GET', '/api/exports/backup/drive', 'Sauvegardes présentes sur Google Drive (admin)'],
+      ['GET', '/api/exports/audit', 'Journal d\u2019audit des actions sensibles (admin)'],
     ];
     const rows = eps.map(([m, p, d]) => `<tr><td class="m">${m}</td><td class="p">${p}</td><td>${d}</td></tr>`).join('\n');
     res.type('html').send(`<!doctype html>

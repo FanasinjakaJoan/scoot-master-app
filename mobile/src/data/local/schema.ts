@@ -29,11 +29,13 @@ CREATE TABLE IF NOT EXISTS bikes (
   version INTEGER NOT NULL DEFAULT 0,
   created_by TEXT,
   updated_by TEXT,
+  owner_id TEXT,
   device_id TEXT,
   deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_l_bikes_status ON bikes (status);
 CREATE INDEX IF NOT EXISTS idx_l_bikes_updated ON bikes (updated_at);
+CREATE INDEX IF NOT EXISTS idx_l_bikes_owner ON bikes (owner_id);
 
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,
@@ -48,10 +50,12 @@ CREATE TABLE IF NOT EXISTS customers (
   version INTEGER NOT NULL DEFAULT 0,
   created_by TEXT,
   updated_by TEXT,
+  owner_id TEXT,
   device_id TEXT,
   deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_l_customers_updated ON customers (updated_at);
+CREATE INDEX IF NOT EXISTS idx_l_customers_owner ON customers (owner_id);
 
 CREATE TABLE IF NOT EXISTS sales (
   id TEXT PRIMARY KEY,
@@ -70,10 +74,12 @@ CREATE TABLE IF NOT EXISTS sales (
   version INTEGER NOT NULL DEFAULT 0,
   created_by TEXT,
   updated_by TEXT,
+  owner_id TEXT,
   device_id TEXT,
   deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_l_sales_status ON sales (status);
+CREATE INDEX IF NOT EXISTS idx_l_sales_owner ON sales (owner_id);
 CREATE INDEX IF NOT EXISTS idx_l_sales_customer ON sales (customer_id);
 CREATE INDEX IF NOT EXISTS idx_l_sales_updated ON sales (updated_at);
 
@@ -119,3 +125,25 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 
 /** Horodatage local ISO-8601 UTC (clé LWW côté client). */
 export const nowIso = () => new Date().toISOString();
+
+/**
+ * Migration idempotente des bases locales créées avant l'ajout de la colonne
+ * `owner_id` (isolation des données). `CREATE TABLE IF NOT EXISTS` ne modifie
+ * pas une table déjà existante : on ajoute donc la colonne manquante.
+ *
+ * Accepte tout adaptateur exposant `getAllSync` / `runSync` (implémentation
+ * native `expo-sqlite` ou adaptateur `sql.js` du navigateur).
+ */
+export function migrateLocalSchema(db: {
+  getAllSync<T>(sql: string, ...args: unknown[]): T[];
+  runSync(sql: string, ...args: unknown[]): unknown;
+}): void {
+  for (const table of ['bikes', 'customers', 'sales']) {
+    const cols = db
+      .getAllSync<{ name: string }>(`PRAGMA table_info(${table})`)
+      .map((c) => c.name);
+    if (!cols.includes('owner_id')) {
+      db.runSync(`ALTER TABLE ${table} ADD COLUMN owner_id TEXT`);
+    }
+  }
+}

@@ -79,6 +79,20 @@ services:
         value: "*"
       - key: DB_PATH
         value: /app/data/scoot.db # chemin sur le disque persistant
+      # --- Sauvegarde automatisée vers Google Drive (compte de service) ---
+      # Laisser BACKUP_ENABLED=false tant que les identifiants Google ne sont
+      # pas renseignés. Décommenter et renseigner dans le dashboard Render
+      # (marquer GOOGLE_PRIVATE_KEY comme « secret ») :
+      - key: BACKUP_ENABLED
+        value: "false"
+      # - key: GOOGLE_CLIENT_EMAIL
+      #   value: backup-bot@mon-projet.iam.gserviceaccount.com
+      # - key: GOOGLE_PRIVATE_KEY
+      #   sync: false # valeur secrète à saisir dans le dashboard
+      # - key: GOOGLE_DRIVE_FOLDER_ID
+      #   value: 1AbCdEfGhIjKlMnOpQrStUvWxYz
+      - key: BACKUP_INTERVAL_HOURS
+        value: "24"
     disk:
       name: scoot-master-data
       mountPath: /app/data # correspond à DB_PATH parent

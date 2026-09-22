@@ -25,8 +25,13 @@ colonnes de synchronisation) :
    │                                                                  │
    └─ colonnes de synchronisation communes :                         │
       id (UUID client), created_at, updated_at, version,             │
-      created_by, updated_by, device_id, deleted_at (tombstone)      │
+      created_by, updated_by, owner_id, device_id,                   │
+      deleted_at (tombstone)                                         │
 ```
+
+`owner_id` porte la **propriété** de la ligne (isolation « Row-Level Security ») :
+il vaut l'id de l'utilisateur qui a créé la ligne, est imposé par le serveur, et
+sert de filtre à toutes les lectures/écritures pour les comptes non admin.
 
 **Tables locales uniquement** (téléphone) : `sync_queue`, `sync_conflicts`, `sync_meta`.
 
@@ -53,10 +58,11 @@ colonnes de synchronisation) :
 | `created_at` / `updated_at` | TEXT ISO-8601 UTC | NOT NULL | Clés LWW |
 | `version` | INTEGER | def. 0 | Incrémenté à chaque changement |
 | `created_by` / `updated_by` | TEXT | NULL | Utilisateur (id serveur) |
+| `owner_id` | TEXT | NULL | Propriétaire (isolation RLS) — imposé par le serveur |
 | `device_id` | TEXT | NULL | Appareil de la dernière modification (tie-break) |
 | `deleted_at` | TEXT | NULL | **Tombstone** — suppression logique |
 
-Index : `status`, `brand`, `updated_at` (pull), `deleted_at`.
+Index : `status`, `brand`, `updated_at` (pull), `deleted_at`, `owner_id`.
 
 ## 3. `customers` — clients
 
@@ -122,7 +128,32 @@ séparée (évite les incohérences partielles).
 | `role` | TEXT | `admin` \| `seller` |
 | + colonnes de temps / tombstone | | |
 
-## 8. Tables locales de synchronisation (téléphone)
+**RBAC** : seul le rôle `admin` contourne l'isolation par `owner_id` (accès à
+l'intégralité des données) et peut supprimer des lignes, valider des conflits
+(`force`) ou déclencher une sauvegarde serveur/Google Drive. Le rôle `seller`
+est strictement confiné à ses propres données.
+
+## 8. `audit_log` — journal d'audit (serveur uniquement)
+
+Trace les actions sensibles (création, modification, suppression, validation de
+conflit, sauvegarde Drive) pour l'analyse de sécurité.
+
+| Colonne | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTO | Ordre chronologique |
+| `at` | TEXT ISO-8601 UTC | Horodatage de l'action |
+| `actor_id` | TEXT | Auteur (id utilisateur) |
+| `actor_role` | TEXT | Rôle effectif au moment de l'action |
+| `action` | TEXT | `create` \| `update` \| `delete` \| `force` \| `backup.drive` … |
+| `entity` | TEXT | `bikes` \| `customers` \| `sales` \| … (NULL si global) |
+| `entity_id` | TEXT | Identifiant de la ligne concernée |
+| `owner_id` | TEXT | Propriétaire de la ligne au moment de l'action |
+| `admin_access` | INTEGER (0/1) | 1 si l'action a été effectuée hors périmètre (admin) |
+| `details` | TEXT (JSON) | Contexte additionnel (champs modifiés, taille…) |
+
+Index : `at`, `(entity, entity_id)`, `actor_id`.
+
+## 9. Tables locales de synchronisation (téléphone)
 
 ### `sync_queue` — file d'actions hors ligne
 | Colonne | Type | Description |
