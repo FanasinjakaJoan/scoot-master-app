@@ -82,6 +82,57 @@ function normalizeOrigin(entry) {
 
 const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
 
+/**
+ * Lit un booléen d'environnement (`true`/`1`/`yes`/`on`, insensible à la casse).
+ * Toute autre valeur (ou absence) renvoie `fallback`.
+ */
+function envBool(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+/**
+ * Identifiants de service Firebase, lus depuis les variables d'environnement
+ * (jamais depuis un fichier committé). Le compte de service doit être limité au
+ * strict nécessaire : Storage Object Admin sur le seul bucket de sauvegarde,
+ * et Cloud Datastore Import Export Admin si l'export natif Firestore est activé.
+ */
+const firebaseServiceAccount = {
+  projectId: process.env.FIREBASE_PROJECT_ID || '',
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
+  // La clé privée est souvent saisie avec des `\n` littéraux (dashboard,
+  // fichier .env) : on les retransforme en vrais sauts de ligne.
+  privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+};
+
+/**
+ * Configuration de la sauvegarde Firebase.
+ *
+ * `enabled` n'est vrai que si l'interrupteur est activé ET que les trois
+ * identifiants sont présents : un réglage partiel (bucket saisi, clé
+ * manquante…) doit dégrader proprement, pas faire tomber l'API.
+ */
+const firebaseBackup = {
+  enabled: envBool(process.env.FIREBASE_BACKUP_ENABLED),
+  hasCredentials: Boolean(
+    firebaseServiceAccount.projectId && firebaseServiceAccount.clientEmail && firebaseServiceAccount.privateKey
+  ),
+  bucket: process.env.FIREBASE_STORAGE_BUCKET || '',
+  prefix: (process.env.FIREBASE_BACKUP_PREFIX || 'backups/').replace(/^\/+/, ''),
+  /** Cadence de la sauvegarde planifiée, en heures. */
+  intervalHours: Math.max(1, Number(process.env.FIREBASE_BACKUP_INTERVAL_HOURS || 24)),
+  /** Nombre de fichiers conservés dans le bucket (rotation). */
+  retention: Math.max(1, Number(process.env.FIREBASE_BACKUP_RETENTION || 30)),
+  /**
+   * Export natif Firestore → GCS (`projects.databases.exportDocuments`)
+   * lorsqu'il n'y a pas de base SQLite à exporter (déploiement Firestore).
+   */
+  firestoreExport: envBool(process.env.FIREBASE_FIRESTORE_EXPORT_ENABLED),
+};
+
+/** Vrai si la sauvegarde Firebase est réellement exploitable. */
+firebaseBackup.ready = firebaseBackup.enabled && firebaseBackup.hasCredentials && Boolean(firebaseBackup.bucket);
+
 const config = {
   port: Number(process.env.PORT || 4000),
   dbPath: process.env.DB_PATH || path.join(__dirname, '..', 'data', 'scoot.db'),
@@ -99,6 +150,8 @@ const config = {
    */
   corsStrict: String(process.env.CORS_STRICT).toLowerCase() === 'true',
   seedOnStart: String(process.env.SEED_ON_START).toLowerCase() !== 'false',
+  firebaseServiceAccount,
+  firebaseBackup,
 };
 
-module.exports = { config, ttlToSeconds, parseCorsOrigins };
+module.exports = { config, ttlToSeconds, parseCorsOrigins, envBool };

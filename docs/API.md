@@ -106,6 +106,30 @@ les droits admin. La réactivation d'un compte rend l'accès sans reconnexion.
 | POST | `/api/exports/backup` | 🔑 | `{fileName, data}` — téléverse une sauvegarde locale (stockage serveur `storage/backups/`) |
 | GET | `/api/exports/backups` | 👑 | Liste des sauvegardes téléversées |
 
+### Sauvegarde Firebase (Cloud Storage)
+
+Voir le [§ Sauvegarde Firebase du README](../README.md#-sauvegarde-firebase-cloud-storage)
+pour la configuration (`FIREBASE_*`) et les règles de sécurité.
+
+| Méthode | Route | Accès | Description |
+|---|---|---|---|
+| GET | `/api/exports/backups/firebase` | 👑 | État : `{enabled, ready, bucket, prefix, intervalHours, retention, mode, running, lastRun, history}` |
+| GET | `/api/exports/backups/firebase/files` | 👑 | Objets du bucket : `{items: [{path, size, updatedAt}]}` |
+| POST | `/api/exports/backups/firebase` | 👑 | Déclenche une sauvegarde. Corps optionnel `{kind:'json'\|'firestore', collectionIds?}`. `201` = `success`, `200` = `skipped` (désactivée / déjà en cours), `502` = `failure` |
+| POST | `/api/exports/backups/firebase/restore` | 👑 | `{path}` — restaure un fichier précis. Fusion par identifiant ; les lignes en conflit de clé unique sont listées dans `applied.skipped` |
+
+Réponse d'un run (métadonnées) :
+
+```json
+{
+  "id": "…", "reason": "manual", "actor": "admin",
+  "startedAt": "2026-09-22T10:00:00.000Z", "finishedAt": "2026-09-22T10:00:01.000Z",
+  "durationMs": 1000, "size": 2048, "status": "success",
+  "path": "backups/scoot-backup-2026-09-22T10-00-00.json", "kind": "json",
+  "attempts": 1, "counts": { "bikes": 11, "customers": 5, "sales": 3 }, "error": null
+}
+```
+
 ## Codes d'erreur
 
 | Code | Signification |

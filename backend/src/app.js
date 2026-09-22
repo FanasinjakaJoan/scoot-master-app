@@ -12,16 +12,22 @@ const saleRoutes = require('./routes/sales');
 const syncRoutes = require('./routes/sync');
 const exportRoutes = require('./routes/exports');
 const userRoutes = require('./routes/users');
+const { createBackupService } = require('./services/backup');
 
 /**
  * Fabrique l'application Express (séparable du serveur pour les tests).
  * @param {import('better-sqlite3').Database} db
- * @param {{ corsOrigins?: string[]|'*', corsStrict?: boolean }} [options]
- *   surcharge CORS pour les tests ; par défaut la configuration d'environnement.
+ * @param {{ corsOrigins?: string[]|'*', corsStrict?: boolean, backupService?: object }} [options]
+ *   surcharge CORS et sauvegarde pour les tests ; par défaut la configuration
+ *   d'environnement.
  */
 function createApp(db, options = {}) {
   const corsOrigins = options.corsOrigins ?? config.corsOrigins;
   const corsStrict = options.corsStrict ?? config.corsStrict;
+  // Toujours construit : même désactivée, la sauvegarde expose un état lisible
+  // (`/backups/firebase`) et un déclenchement qui répond « skipped » avec la
+  // raison, plutôt qu'un 404 déroutant.
+  const backupService = options.backupService || createBackupService({ db });
   const app = express();
   app.disable('x-powered-by');
   // Base portée par l'application : le middleware d'authentification y relit le
@@ -74,6 +80,10 @@ function createApp(db, options = {}) {
       ['GET', '/api/exports/backup', 'Sauvegarde complète JSON (auth)'],
       ['POST', '/api/exports/backup', 'Téléverser une sauvegarde locale (auth)'],
       ['GET', '/api/exports/backups', 'Liste des sauvegardes téléversées (admin)'],
+      ['GET', '/api/exports/backups/firebase', 'État &amp; historique de la sauvegarde Firebase (admin)'],
+      ['GET', '/api/exports/backups/firebase/files', 'Objets présents dans le bucket Firebase (admin)'],
+      ['POST', '/api/exports/backups/firebase', 'Déclencher une sauvegarde Firebase à la demande (admin)'],
+      ['POST', '/api/exports/backups/firebase/restore', 'Restaurer un fichier de sauvegarde précis (admin)'],
     ];
     const rows = eps.map(([m, p, d]) => `<tr><td class="m">${m}</td><td class="p">${p}</td><td>${d}</td></tr>`).join('\n');
     res.type('html').send(`<!doctype html>
@@ -109,10 +119,13 @@ Documentation : <code>docs/API.md</code>, schéma : <code>docs/DATABASE_SCHEMA.m
   app.use('/api/customers', customerRoutes(db));
   app.use('/api/sales', saleRoutes(db));
   app.use('/api/sync', syncRoutes(db));
-  app.use('/api/exports', exportRoutes(db));
+  app.use('/api/exports', exportRoutes(db, { backupService }));
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Route introuvable.' }));
   app.use(errorHandler);
+  // Exposé pour que le serveur démarre le planificateur de sauvegarde et que
+  // le diagnostic (`/`) puisse lire l'état sans reconstruire le service.
+  app.locals.backupService = backupService;
   return app;
 }
 

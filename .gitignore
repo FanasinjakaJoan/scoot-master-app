@@ -8,6 +8,12 @@ backend/data/
 backend/storage/
 backend/.env
 
+# Clés de compte de service Firebase / GCP (ne jamais versionner ces fichiers)
+*serviceAccount*.json
+*service-account*.json
+*firebase-adminsdk*.json
+gcloud-*.json
+
 # APK hébergés par le serveur web (déposés à la main, non versionnés)
 deploy/apk/
 

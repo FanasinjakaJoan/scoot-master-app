@@ -65,6 +65,11 @@ avec résolution de conflits et exports JSON/CSV.
 - **Exports & sauvegarde** : JSON ou CSV par entité depuis la base locale (fonctionne
   hors ligne), partage via la fiche de partage du téléphone, sauvegarde complète JSON
   et téléversement de la sauvegarde sur le serveur.
+- **Sauvegarde Firebase** (admin) : sauvegarde **automatique** planifiée vers
+  Cloud Storage (snapshot JSON complet ou export natif Firestore), sauvegarde
+  **manuelle** à la demande, **restauration** d'un fichier précis, métadonnées
+  (date, taille, statut), réessais réseau et rotation. Voir
+  [§ Sauvegarde Firebase](#-sauvegarde-firebase-cloud-storage).
 - Indicateur de statut permanent : *En ligne / Hors ligne* + *Données à jour /
   X modifications en attente / Y conflits à résoudre*.
 
@@ -93,8 +98,11 @@ scoot-master-app/
 │   │   ├── db/                ← schéma, init, seed, adaptateur node:sqlite
 │   │   ├── middleware/        ← auth JWT, rôles, erreurs
 │   │   ├── services/sync.js   ← moteur push/pull, LWW, force, renumérotation
+│   │   ├── services/backup.js ← sauvegarde Firebase : snapshot, réessais, rotation, restauration
+│   │   ├── services/firebase.js ← Storage (injectable) + export natif Firestore (OAuth RS256)
 │   │   └── routes/            ← auth, bikes, customers, sales, sync, exports
-│   ├── tests/                 ← 26 tests (node:test) : API, auth, sync, sauvegardes
+│   ├── firebase/              ← storage.rules + firestore.rules (accès sauvegardes = admin)
+│   ├── tests/                 ← 95 tests (node:test) : API, auth, sync, sauvegardes, Firebase
 │   └── Dockerfile             ← image de production de l'API
 └── mobile/                    ← App React Native (Expo SDK 57, TypeScript)
     ├── App.tsx                ← garde d'initialisation (base locale) + ErrorBoundary
@@ -184,9 +192,9 @@ npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, o
 
 | Couche | Commande | Contenu |
 |---|---|---|
-| Backend | `cd backend && npm test` | 47 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro**, **révocation effective sur toutes les routes protégées** (compte supprimé/désactivé → 401, rôle lu en base) |
+| Backend | `cd backend && npm test` | 95 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro**, **révocation effective sur toutes les routes protégées** (compte supprimé/désactivé → 401, rôle lu en base), **sauvegarde Firebase** (snapshot, réessais, rotation, états `skipped`, restauration/fusion, JWT RS256 + `exportDocuments`, routes admin 401/403) |
 | API réelle | `cd backend && npm run check:api` | 48 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
-| Mobile | `cd mobile && npm test` | 74 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde) |
+| Mobile | `cd mobile && npm test` | 85 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde), **sauvegarde Firebase** (déclenchement, état, listing, restauration, renouvellement de session) |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
 | Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés ; avec `-- --stale-session`, une session dont le jeton est refusé par le serveur est validée via `POST /api/auth/check` (**toujours 200, ZÉRO 401**) puis retour à l'écran de connexion, aucun appel métier |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
@@ -307,6 +315,184 @@ Résumé (détail : [docs/SYNC.md](docs/SYNC.md)) :
 6. **Effets de domaine** : le serveur rejoue les statuts des motos à chaque
    vente (confirmée ⇒ sold, annulée ⇒ disponible) ; une règle d'**idempotence**
    empêche les faux conflits quand les deux côtés ont déjà le même état.
+
+## ☁️ Sauvegarde Firebase (Cloud Storage)
+
+Le backend sait sauvegarder les données vers **Firebase Cloud Storage**, de façon
+**planifiée** (quotidienne par défaut) et **manuelle** (bouton administrateur dans
+l'app), avec métadonnées, rotation et restauration.
+
+### Ce qui est sauvegardé
+
+Le serveur sérialise son état applicatif complet en JSON (`app: "scoot-master"`) :
+`bikes`, `customers`, `sales` (+ `sale_items`), **tombstones inclus** — sans quoi une
+restauration ressusciterait des enregistrements supprimés. Chaque fichier porte :
+
+```
+backups/scoot-backup-2026-09-22T10-00-00.json
+```
+
+Si vos données vivent dans **Firestore** (et non dans la base SQLite du serveur),
+activez l'export natif Firestore → GCS (`FIREBASE_FIRESTORE_EXPORT_ENABLED=true`) :
+le déclenchement appelle alors `projects.databases.exportDocuments`, ce qui écrit
+un export managé dans le bucket au lieu d'un snapshot JSON.
+
+### 1. Créer le bucket et le compte de service
+
+1. Console Firebase → **Storage** → créer le bucket (ex. `scoot-master-backups`).
+   Laissez-le **privé** (aucun accès public).
+2. Console Firebase → **Paramètres du projet → Comptes de service** →
+   *Générer une nouvelle clé privée*. Téléchargez le JSON (il contient
+   `project_id`, `client_email`, `private_key`).
+3. Console GCP → **IAM** → donner au compte de service, sur **ce seul bucket** :
+   - `Storage Object Admin` (lecture/écriture/suppression des sauvegardes) ;
+   - `Cloud Datastore Import Export Admin` **uniquement** si vous activez l'export
+     Firestore natif.
+
+Appliquez le **principe du moindre privilège** : pas de rôle projet large.
+
+### 2. Renseigner les variables d'environnement
+
+| Variable | Rôle |
+|---|---|
+| `FIREBASE_BACKUP_ENABLED` | `true` pour activer la sauvegarde |
+| `FIREBASE_PROJECT_ID` | `project_id` du JSON de service |
+| `FIREBASE_CLIENT_EMAIL` | `client_email` du JSON |
+| `FIREBASE_PRIVATE_KEY` | `private_key` du JSON, **sur une seule ligne** (`\n` littéraux) |
+| `FIREBASE_STORAGE_BUCKET` | Bucket de destination (ex. `scoot-master-backups`) |
+| `FIREBASE_BACKUP_PREFIX` | Préfixe des fichiers (défaut `backups/`) |
+| `FIREBASE_BACKUP_INTERVAL_HOURS` | Cadence de la sauvegarde planifiée (défaut `24`) |
+| `FIREBASE_BACKUP_RETENTION` | Nombre de fichiers conservés (défaut `30`) |
+| `FIREBASE_FIRESTORE_EXPORT_ENABLED` | `true` pour l'export natif Firestore |
+
+**Sécurité des secrets.** Toutes ces valeurs viennent de l'environnement, jamais du
+code. En local, copiez `backend/.env.example` vers `backend/.env` — le fichier est
+**ignoré par git** (`backend/.gitignore`, `.gitignore`). En production Render,
+saisissez-les dans le tableau de bord (variables d'environnement du service
+`scoot-master-api`), en cochant « secret » pour `FIREBASE_PRIVATE_KEY` ; ne
+committez jamais le JSON du compte de service.
+
+> La sauvegarde est **dégradée proprement** : tant que l'interrupteur est à `false`
+> ou que les identifiants manquent, l'API démarre normalement et chaque
+> déclenchement répond `status: "skipped"` avec la raison, au lieu d'échouer.
+
+### 3. Sauvegarde planifiée
+
+`backend/src/server.js` démarre un planificateur (`createBackupScheduler`) qui
+exécute une sauvegarde peu après le démarrage si la précédente remonte à plus que
+l'intervalle, puis se répète toutes les `FIREBASE_BACKUP_INTERVAL_HOURS`. Les minuteurs
+sont `.unref()` : ils ne bloquent jamais l'arrêt du serveur. Un verrou empêche deux
+sauvegardes simultanées.
+
+### 4. Sauvegarde manuelle
+
+Depuis l'app, écran **Synchronisation → Sauvegarde Firebase** (visible pour les
+**administrateurs** uniquement) : « Sauvegarder maintenant » et « Restaurer… ».
+
+En ligne de commande :
+
+```bash
+TOKEN=$(curl -s -X POST $API/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .token)
+
+# Déclencher une sauvegarde immédiate
+curl -s -X POST $API/api/exports/backups/firebase -H "Authorization: Bearer $TOKEN" | jq
+
+# État + historique (dernier run : date, taille, statut)
+curl -s $API/api/exports/backups/firebase -H "Authorization: Bearer $TOKEN" | jq
+
+# Fichiers disponibles dans le bucket
+curl -s $API/api/exports/backups/firebase/files -H "Authorization: Bearer $TOKEN" | jq
+```
+
+### 5. Restauration d'un fichier précis
+
+La restauration **fusionne par identifiant** : elle n'efface jamais les
+enregistrements créés depuis la sauvegarde. Les tombstones du fichier sont appliqués,
+et une ligne en conflit de clé unique (ex. `sale_number` déjà pris par un autre
+identifiant) est **ignorée et signalée** dans `applied.skipped`, sans interrompre le
+reste. Opération réservée à l'**admin** et tracée.
+
+Chaque ligne restaurée voit son `updated_at` porté à l'instant de la restauration
+(et son `version` incrémenté), tombstones compris. C'est ce qui permet aux
+**téléphones de récupérer les données restaurées** : le pull ne renvoie que les
+lignes plus récentes que le curseur du client, et le client ignore un upsert dont
+l'horodatage est plus ancien que sa copie locale. Sans cette remise à l'heure, une
+restauration n'aurait aucun effet visible sur les appareils déjà synchronisés, et un
+enregistrement supprimé dans la sauvegarde **ressusciterait** (il serait renvoyé
+comme un upsert actif au lieu d'un tombstone).
+
+```bash
+curl -s -X POST $API/api/exports/backups/firebase/restore \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"path":"backups/scoot-backup-2026-09-22T10-00-00.json"}' | jq
+```
+
+### 6. Journalisation et gestion des erreurs
+
+Chaque run produit des **métadonnées** : `id`, `reason` (`scheduled`/`manual`),
+`actor`, `startedAt`, `finishedAt`, `durationMs`, `size`, `status`
+(`success`/`failure`/`skipped`), `path`, `attempts` et, le cas échéant, `error`.
+Elles sont renvoyées par `GET /api/exports/backups/firebase` (20 derniers runs) et
+journalisées côté serveur (`[backup] …`). En cas d'échec réseau, le téléversement est
+**réessayé** (3 tentatives, délai exponentiel) avant d'être marqué `failure` ; un
+verrou resté bloqué est repris après 30 min. La rotation (`FIREBASE_BACKUP_RETENTION`)
+ne supprime que les objets portant le marqueur `app=scoot-master` — un fichier
+étranger dans le même dossier est préservé.
+
+### 7. Règles de sécurité Firebase
+
+Les règles fournies dans `backend/firebase/` refusent **tout par défaut** et
+réservent l'accès aux sauvegardes aux comptes portant le custom claim `admin` :
+
+- `storage.rules` — `backups/**` lisible/écrivable seulement si
+  `request.auth.token.admin == true` ;
+- `firestore.rules` — même principe pour les métadonnées de sauvegarde.
+
+Le compte de service du backend, lui, écrit via IAM et contourne ces règles. Pour
+poser le claim sur un utilisateur :
+
+```js
+admin.auth().setCustomUserClaims(uid, { admin: true });
+```
+
+Déploiement des règles (nécessite `firebase-tools`) :
+
+```bash
+cd backend/firebase
+firebase deploy --only storage,firestore:rules
+```
+
+### 8. Tester les sauvegardes
+
+**Tests automatisés** (aucun accès réseau ni credentials : un bucket en mémoire
+exerce le vrai code de sauvegarde) :
+
+```bash
+cd backend && npm test        # inclut tests/backup-firebase.test.js (28 tests)
+cd mobile && npx jest         # inclut __tests__/firebase-backup.test.ts (8 tests)
+```
+
+Ces tests couvrent : snapshot complet, **réessais** puis succès, échec après
+épuisement, **rotation** (et préservation d'un fichier étranger), non-chevauchement,
+états `skipped`, restauration (fusion, tombstones, conflit de clé unique), signature
+**RS256** du JWT OAuth et appel `exportDocuments`, routes admin (401/403), gestion du
+renouvellement de session côté mobile.
+
+**Vérification manuelle** (avec Firebase réellement configuré) :
+
+```bash
+API=https://scoot-master-api.onrender.com
+# 1. L'état doit indiquer ready:true et le bucket
+curl -s $API/api/exports/backups/firebase -H "Authorization: Bearer $TOKEN" | jq '{ready,bucket,intervalHours}'
+# 2. Déclencher puis vérifier un run success et la taille
+curl -s -X POST $API/api/exports/backups/firebase -H "Authorization: Bearer $TOKEN" | jq '{status,size,path}'
+# 3. Le fichier doit apparaître dans le bucket
+curl -s $API/api/exports/backups/firebase/files -H "Authorization: Bearer $TOKEN" | jq '.items[0]'
+# 4. Restaurer ce fichier : applied doit correspondre aux entités sauvegardées
+curl -s -X POST $API/api/exports/backups/firebase/restore -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "{\"path\":\"$(curl -s $API/api/exports/backups/firebase/files -H "Authorization: Bearer $TOKEN" | jq -r '.items[0].path')\"}" | jq
+```
 
 ## 🔐 Sécurité
 

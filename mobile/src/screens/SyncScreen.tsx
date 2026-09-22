@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { Alert } from '../lib/alert';
 import { StatusBar } from 'expo-status-bar';
@@ -11,16 +11,51 @@ import { Button, Row } from '../components/Buttons';
 import { EmptyState } from '../components/EmptyState';
 import { timeAgo } from '../lib/format';
 import type { ConflictRecord } from '../types';
+import type { FirebaseBackupRun, FirebaseBackupStatus } from '../data/api/client';
 import type { NavigatorProp } from '../navigation/types';
 
 const ENTITY_ICON: Record<string, string> = { bikes: '🏍️', customers: '👥', sales: '🧾' };
 const ENTITY_LABEL: Record<string, string> = { bikes: 'Moto', customers: 'Client', sales: 'Vente' };
 const OP_LABEL: Record<string, string> = { create: 'Création', update: 'Modification', delete: 'Suppression' };
 
+/** Présentation homogène des statuts de sauvegarde Firebase. */
+const BACKUP_STATUS: Record<FirebaseBackupRun['status'], { icon: string; label: string; color: string }> = {
+  success: { icon: '✅', label: 'Réussie', color: colors.success },
+  failure: { icon: '⛔', label: 'Échec', color: colors.danger },
+  skipped: { icon: '⏭️', label: 'Ignorée', color: colors.warning },
+};
+
+/** Taille lisible (octets → Ko/Mo). */
+function formatSize(bytes: number | null): string {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+}
+
 export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
   const app = useApp();
   const [, force] = useState(0);
   const rerender = () => force((v) => v + 1);
+  const isAdmin = app.user?.role === 'admin';
+
+  // Sauvegarde Firebase : état chargé à l'ouverture, puis rafraîchi après chaque
+  // action. On ne tente rien pour un non-admin (rôle requis côté serveur).
+  const [backup, setBackup] = useState<FirebaseBackupStatus | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+
+  const loadBackupState = useCallback(async () => {
+    if (!isAdmin || !app.online) return;
+    try {
+      setBackup(await app.firebaseBackupStatus());
+      setBackupError(null);
+    } catch (e) {
+      setBackupError(e instanceof Error ? e.message : 'État de sauvegarde indisponible.');
+    }
+  }, [isAdmin, app.online, app.firebaseBackupStatus]);
+
+  useEffect(() => { void loadBackupState(); }, [loadBackupState]);
 
   const ops = pendingOperations(100);
   const conflicts = listConflicts();
@@ -46,6 +81,69 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
     app.uploadBackup()
       .then((file) => Alert.alert('Sauvegarde envoyée', `Stockée sur le serveur : ${file}`))
       .catch((e) => Alert.alert('Téléversement', e instanceof Error ? e.message : 'Échec.'));
+  }
+
+  /** Sauvegarde manuelle vers Firebase (Cloud Storage). */
+  async function onFirebaseBackup() {
+    if (!app.online) {
+      Alert.alert('Hors ligne', 'La sauvegarde Firebase nécessite une connexion.');
+      return;
+    }
+    setBackupBusy(true);
+    try {
+      const run = await app.backupNow();
+      const detail = run.status === 'success'
+        ? `Sauvegarde envoyée vers Firebase.\n${formatSize(run.size)} — ${run.path}`
+        : `Sauvegarde ignorée : ${run.error || 'sauvegarde non exécutée.'}`;
+      Alert.alert(run.status === 'success' ? 'Sauvegarde Firebase' : 'Sauvegarde ignorée', detail);
+    } catch (e) {
+      Alert.alert('Sauvegarde Firebase', e instanceof Error ? e.message : 'Échec de la sauvegarde.');
+    } finally {
+      setBackupBusy(false);
+      await loadBackupState();
+    }
+  }
+
+  /** Restauration depuis un fichier de sauvegarde précis (double confirmation). */
+  function onRestore() {
+    if (!app.online) {
+      Alert.alert('Hors ligne', 'La restauration nécessite une connexion.');
+      return;
+    }
+    app.listBackups()
+      .then((files) => {
+        if (!files.length) {
+          Alert.alert('Restauration', 'Aucun fichier de sauvegarde dans le bucket.');
+          return;
+        }
+        const latest = files[0];
+        Alert.alert(
+          'Restaurer une sauvegarde',
+          `Dernier fichier : ${latest.path}\n${formatSize(latest.size)}\n\n` +
+            'Les données seront fusionnées dans cet appareil (aucune suppression). Confirmer ?',
+          [
+            { text: 'Annuler', style: 'cancel' },
+            {
+              text: 'Restaurer',
+              style: 'destructive',
+              onPress: () => {
+                setBackupBusy(true);
+                app.restoreBackup(latest.path)
+                  .then((applied) => {
+                    Alert.alert(
+                      'Restauration terminée',
+                      `Restauré : ${applied.bikes} moto(s), ${applied.customers} client(s), ` +
+                        `${applied.sales} vente(s), ${applied.sale_items} ligne(s).`
+                    );
+                  })
+                  .catch((e) => Alert.alert('Restauration', e instanceof Error ? e.message : 'Échec.'))
+                  .finally(() => { setBackupBusy(false); rerender(); });
+              },
+            },
+          ]
+        );
+      })
+      .catch((e) => Alert.alert('Restauration', e instanceof Error ? e.message : 'Échec.'));
   }
 
   function onConflict(c: ConflictRecord, keepServer: boolean) {
@@ -218,6 +316,62 @@ export function SyncScreen({ navigation }: NavigatorProp<'Sync'>) {
         <Text style={textStyles.caption}>Téléversement indisponible hors ligne — la sauvegarde locale reste possible.</Text>
       ) : null}
 
+      {/* ---- Sauvegarde Firebase (Cloud Storage) — administrateurs ---- */}
+      {isAdmin ? (
+        <>
+          <Text style={[textStyles.h2, styles.section]}>Sauvegarde Firebase</Text>
+          <Card>
+            <Row gap={8}>
+              <Text style={styles.backupIcon}>☁️</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.queueTitle}>Cloud Storage</Text>
+                <Text style={textStyles.caption}>
+                  {backup
+                    ? `${backup.ready ? 'Active' : 'Non configurée'} · ${backup.bucket || 'bucket inconnu'} · ` +
+                      `toutes les ${backup.intervalHours} h · ${backup.mode === 'firestore' ? 'export Firestore' : 'snapshot JSON'}`
+                    : 'État indisponible.'}
+                </Text>
+                {backup?.lastRun ? (
+                  <Text style={textStyles.caption}>
+                    {BACKUP_STATUS[backup.lastRun.status].icon} {BACKUP_STATUS[backup.lastRun.status].label}
+                    {' · '}{backup.lastRun.reason === 'scheduled' ? 'automatique' : 'manuelle'}
+                    {' · '}{timeAgo(backup.lastRun.finishedAt)}
+                    {backup.lastRun.size ? ` · ${formatSize(backup.lastRun.size)}` : ''}
+                    {backup.lastRun.error ? ` · ${backup.lastRun.error}` : ''}
+                  </Text>
+                ) : (
+                  <Text style={textStyles.caption}>Aucune sauvegarde enregistrée pour l’instant.</Text>
+                )}
+                {backupError ? (
+                  <Text style={[textStyles.caption, { color: colors.danger }]}>{backupError}</Text>
+                ) : null}
+              </View>
+            </Row>
+            <Row gap={8} style={{ marginTop: 10 }}>
+              <Button
+                small
+                title={backupBusy ? 'En cours…' : 'Sauvegarder maintenant'}
+                disabled={backupBusy || !app.online}
+                onPress={onFirebaseBackup}
+              />
+              <Button
+                small
+                variant="secondary"
+                title="Restaurer…"
+                disabled={backupBusy || !app.online}
+                onPress={onRestore}
+              />
+            </Row>
+            {backup && !backup.ready ? (
+              <Text style={textStyles.caption}>
+                ⓘ Complétez FIREBASE_BACKUP_ENABLED, FIREBASE_STORAGE_BUCKET et les identifiants du
+                compte de service, puis redémarrez l’API (voir README.md).
+              </Text>
+            ) : null}
+          </Card>
+        </>
+      ) : null}
+
       <Text style={[textStyles.caption, styles.foot]}>
         Stratégie de résolution : la modification la plus récente l’emporte (Last-Write-Wins) ;
         en cas de doute, un administrateur peut forcer sa version (validation administrative).
@@ -233,5 +387,6 @@ const styles = StyleSheet.create({
   conflictIcon: { fontSize: 18 },
   conflictTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
   conflictActions: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  backupIcon: { fontSize: 18 },
   foot: { marginTop: 10, lineHeight: 18 },
 });

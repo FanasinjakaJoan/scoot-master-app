@@ -12,8 +12,10 @@ import * as repo from '../data/local/repositories';
 import {
   runSyncCycle, readSyncStatus, clearAuthSuspension, resolveConflictKeepServer, resolveConflictForceMine,
   retryFailedOperation, exportLocal, localBackupSpec, uploadLocalBackup,
+  readFirebaseBackupStatus, triggerFirebaseBackup, restoreFirebase, listFirebaseBackups,
 } from '../data/sync/engine';
 import type { SyncSessionKeeper } from '../data/sync/engine';
+import type { FirebaseBackupRun, FirebaseBackupStatus } from '../data/api/client';
 import { Alert } from '../lib/alert';
 import { deviceIdBase, uuid } from '../lib/uuid';
 import { APP_NAME } from '../lib/config';
@@ -66,6 +68,14 @@ interface AppContextValue {
   shareExport: (entity: 'bikes' | 'customers' | 'sales', format: 'json' | 'csv') => Promise<void>;
   shareFullBackup: () => Promise<void>;
   uploadBackup: () => Promise<string>;
+  /** Sauvegarde Firebase : état courant (admin). */
+  firebaseBackupStatus: () => Promise<FirebaseBackupStatus>;
+  /** Sauvegarde Firebase : déclenchement immédiat (admin). */
+  backupNow: () => Promise<FirebaseBackupRun>;
+  /** Sauvegarde Firebase : fichiers disponibles pour restauration (admin). */
+  listBackups: () => Promise<{ path: string; size: number; updatedAt: string | null }[]>;
+  /** Sauvegarde Firebase : restauration d'un fichier précis (admin). */
+  restoreBackup: (path: string) => Promise<Record<string, number>>;
   dataVersion: number;
   refresh: () => void;
 }
@@ -482,6 +492,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [ensureFreshToken, sessionKeeper]);
 
+  /** Récupère un jeton frais ou signale que la sauvegarde Firebase est impossible. */
+  const requireFreshToken = useCallback(async () => {
+    const fresh = await ensureFreshToken();
+    if (!fresh) throw new ApiError(401, 'Session expirée — reconnectez-vous pour lancer la sauvegarde Firebase.');
+    return fresh;
+  }, [ensureFreshToken]);
+
+  const firebaseBackupStatus = useCallback(
+    async () => readFirebaseBackupStatus(await requireFreshToken(), sessionKeeper),
+    [requireFreshToken, sessionKeeper]
+  );
+
+  const backupNow = useCallback(() => (async () => {
+    const run = await triggerFirebaseBackup(await requireFreshToken(), sessionKeeper);
+    if (run.status === 'failure') {
+      throw new Error(run.error || 'La sauvegarde Firebase a échoué.');
+    }
+    return run;
+  })(), [requireFreshToken, sessionKeeper]);
+
+  const restoreBackup = useCallback((path: string) => (async () => {
+    const result = await restoreFirebase(await requireFreshToken(), path, sessionKeeper);
+    // La base locale vient de changer : forcer le rafraîchissement des écrans.
+    setDataVersion((v) => v + 1);
+    return result.applied;
+  })(), [requireFreshToken, sessionKeeper]);
+
+  const listBackups = useCallback(
+    async () => listFirebaseBackups(await requireFreshToken(), sessionKeeper),
+    [requireFreshToken, sessionKeeper]
+  );
+
   const value = useMemo<AppContextValue>(() => ({
     user, token, online, authNotice,
     doLogin, doLogout, sessionExpired, updateProfile,
@@ -491,10 +533,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveCustomer, deleteCustomer,
     saveSale, patchSaleStatus, deleteSale,
     shareExport, shareFullBackup, uploadBackup,
+    firebaseBackupStatus, backupNow, restoreBackup, listBackups,
     dataVersion, refresh,
   }), [user, token, online, authNotice, doLogin, doLogout, sessionExpired, updateProfile, sync, scheduleSync, resolveConflict, retryFailed,
     saveBike, patchBike, deleteBike, saveCustomer, deleteCustomer, saveSale, patchSaleStatus,
-    deleteSale, shareExport, shareFullBackup, uploadBackup, dataVersion, refresh]);
+    deleteSale, shareExport, shareFullBackup, uploadBackup,
+    firebaseBackupStatus, backupNow, restoreBackup, listBackups,
+    dataVersion, refresh]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

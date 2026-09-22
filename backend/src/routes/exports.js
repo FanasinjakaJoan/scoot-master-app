@@ -32,8 +32,15 @@ const ENTITY_COLUMNS = {
   ],
 };
 
-module.exports = function exportRoutes(db) {
+/**
+ * Fabrique les routes d'export et de sauvegarde.
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ backupService?: object }} [options] service de sauvegarde Firebase
+ *   (injecté par `createApp` ; absent en test unitaire de routes).
+ */
+module.exports = function exportRoutes(db, options = {}) {
   const r = express.Router();
+  const backupService = options.backupService || null;
   r.use(requireAuth);
 
   const rows = (entity, includeDeleted = false) =>
@@ -81,6 +88,77 @@ module.exports = function exportRoutes(db) {
       return { file: f, size: st.size, createdAt: st.mtime.toISOString() };
     });
     res.json({ items: items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)) });
+  });
+
+  // ---------------------------------------------------------------------
+  // Sauvegarde Firebase (Cloud Storage) — état, déclenchement, restauration
+  //
+  // ⚠️ Déclarées AVANT `/:entity` : sinon le motif `:entity` capterait
+  // « backups » (même piège que la route `/backups` ci-dessus).
+  // ---------------------------------------------------------------------
+
+  /** Exige un service de sauvegarde configuré ; 503 explicite sinon. */
+  const requireBackupService = (req, res, next) => {
+    if (!backupService) {
+      return res.status(503).json({ error: 'Service de sauvegarde indisponible sur ce serveur.' });
+    }
+    next();
+  };
+
+  /**
+   * Exige un Firebase réellement configuré (bucket + identifiants). Sans ce
+   * garde-fou, un appel toucherait le SDK et renverrait son message interne
+   * (« Service account object must contain a string "project_id" ») en 500.
+   */
+  const requireBackupReady = (req, res, next) => {
+    if (!backupService.state().ready) {
+      return res.status(409).json({
+        error: 'Sauvegarde Firebase non configurée : renseignez FIREBASE_BACKUP_ENABLED et les identifiants (voir README.md).',
+      });
+    }
+    next();
+  };
+
+  /** GET /api/exports/backups/firebase — état et historique des sauvegardes. */
+  r.get('/backups/firebase', requireRole('admin'), requireBackupService, (req, res) => {
+    res.json(backupService.state());
+  });
+
+  /** GET /api/exports/backups/firebase/files — objets présents dans le bucket. */
+  r.get('/backups/firebase/files', requireRole('admin'), requireBackupService, requireBackupReady, async (req, res, next) => {
+    try {
+      res.json({ items: await backupService.list() });
+    } catch (e) { next(e); }
+  });
+
+  /**
+   * POST /api/exports/backups/firebase — déclenche une sauvegarde à la demande
+   * (`{kind?: 'json'|'firestore', collectionIds?: string[]}`, admin).
+   */
+  r.post('/backups/firebase', requireRole('admin'), requireBackupService, async (req, res, next) => {
+    try {
+      const kind = req.body && req.body.kind === 'firestore' ? 'firestore' : undefined;
+      const collectionIds = req.body && Array.isArray(req.body.collectionIds) ? req.body.collectionIds : undefined;
+      const result = await backupService.run({ reason: 'manual', actor: req.user, kind, collectionIds });
+      // 201 : la sauvegarde a bien été créée. 200 : elle a été volontairement
+      // ignorée (désactivée, déjà en cours) — un résultat valide, pas une panne.
+      // 502 : le téléversement a réellement échoué.
+      const status = result.status === 'success' ? 201 : result.status === 'failure' ? 502 : 200;
+      res.status(status).json(result);
+    } catch (e) { next(e); }
+  });
+
+  /**
+   * POST /api/exports/backups/firebase/restore — restaure un fichier de
+   * sauvegarde précis (`{path}`). Fusion par identifiant : n'efface jamais les
+   * enregistrements créés depuis la sauvegarde. Réservé au rôle admin.
+   */
+  r.post('/backups/firebase/restore', requireRole('admin'), requireBackupService, requireBackupReady, async (req, res, next) => {
+    try {
+      const path = req.body && req.body.path;
+      if (!path || typeof path !== 'string') return res.status(400).json({ error: 'Corps JSON {path: "backups/…json"} requis.' });
+      res.json({ ok: true, ...(await backupService.restore(path)) });
+    } catch (e) { next(e); }
   });
 
   /** GET /api/exports/:entity?format=json|csv — bikes | customers | sales */

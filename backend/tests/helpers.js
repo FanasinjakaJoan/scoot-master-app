@@ -4,9 +4,9 @@ const { initDb } = require('../src/db/init');
 const { createApp } = require('../src/app');
 
 /** Monte l'API sur un port éphémère avec une base en mémoire. */
-async function startTestServer({ seed = true } = {}) {
+async function startTestServer({ seed = true, backupService } = {}) {
   const db = initDb({ dbPath: ':memory:', seedOnStart: seed, seedUsersOnly: seed === 'users' });
-  const app = createApp(db);
+  const app = createApp(db, backupService ? { backupService } : {});
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

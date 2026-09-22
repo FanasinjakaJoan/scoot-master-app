@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// Règles Firestore — métadonnées de sauvegarde et données applicatives.
+//
+// Principe : refus par défaut. Les métadonnées de sauvegarde ne sont
+// consultables que par les administrateurs (custom claim `admin`) ; les
+// écritures correspondantes passent par le compte de service du backend, qui
+// ignore ces règles.
+//
+// Déploiement : `firebase deploy --only firestore:rules`.
+// Attention : ces règles s'appliquent à Firestore. La base de ce projet est
+// SQLite côté serveur ; n'activez Firestore que si vous basculez les données.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Journal des sauvegardes (date, heure, taille, statut).
+    match /backups/{backupId} {
+      allow read: if request.auth != null && request.auth.token.admin == true;
+      allow write: if false; // écrit uniquement par le compte de service
+    }
+
+    // Données applicatives : authentifié + compte présent dans /users.
+    match /bikes/{id}     { allow read, write: if isSignedIn(); }
+    match /customers/{id} { allow read, write: if isSignedIn(); }
+    match /sales/{id}     { allow read, write: if isSignedIn(); }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+  }
+}
