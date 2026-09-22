@@ -261,38 +261,59 @@ Si vous préférez créer les services à la main :
 ### CORS et synchronisation
 
 L'app web appelle l'API en chemins relatifs (`/api/...`) et `deploy/web-server.js`
-est censé les relayer en réseau privé (même origine ⇒ pas de CORS).
+les relaie vers le backend. **La redirection `301` que l'on observait en
+production n'était pas une fatalité de l'hébergeur** : c'était un défaut du
+proxy lui-même.
 
-En pratique, l'edge de l'hébergeur intercepte ces chemins et répond par une
-**redirection** `301`/`307` vers le domaine public de l'API
-(`https://scoot-master-api.onrender.com/api/...`). L'appel devient donc
-**cross-origin** dans le navigateur :
+`new URL('https://scoot-master-api.onrender.com').port` vaut `''` (le port 443
+est implicite). Le proxy faisait `API_URL.port || 80` : pour une cible `https://`
+il ouvrait donc une connexion **en clair sur le port 80**, que l'apex refuse par
+un `301` vers HTTPS.
 
 ```bash
-# constaté en production
-curl -s -o /dev/null -D - https://scoot-master-web.onrender.com/api/health
-# HTTP/2 301 → location: https://scoot-master-api.onrender.com/api/health
-
-# et un pré-vol ne doit PAS suivre une redirection :
-curl -s -o /dev/null -D - -X OPTIONS https://scoot-master-web.onrender.com/api/sync/push \
-  -H 'Origin: https://scoot-master-web.onrender.com' \
-  -H 'Access-Control-Request-Method: POST'
-# HTTP/2 307 → location: https://scoot-master-api.onrender.com/api/sync/push  (au lieu de 204)
+# constaté à l'époque (proxy connecté en clair sur le port 80)
+curl -s -o /dev/null -D - http://scoot-master-api.onrender.com/api/health
+# HTTP/1.1 301 → location: https://scoot-master-api.onrender.com/api/health
 ```
 
-Sans `Access-Control-Allow-Origin` sur la réponse finale, le navigateur **bloque**
-la réponse : la connexion, le push/pull de synchronisation et le téléversement de
-sauvegarde échouent avec un message vu comme un **403**.
+Ce `301` était ensuite **renvoyé au navigateur**, qui le suivait vers le domaine
+public de l'API. La redirection devenait **cross-origin**, et la spécification
+Fetch impose alors de **retirer l'en-tête `Authorization`** : `/api/*` était
+rejoué sans jeton → `401`/`403`. Pire, un `POST` redirigé en `301` est converti
+en `GET` par le navigateur, donc `POST /api/sync/push` devenait un `GET`.
 
-L'API renvoie donc désormais `Access-Control-Allow-Origin` de façon fiable
-(`backend/src/middleware/cors.js`), pour toute origine, et répond elle-même au
-pré-vol avec `204`. Diagnostic rapide :
+Le proxy est désormais corrigé (`deploy/web-server.js`) :
+
+- `transportFor()` choisit le module `http`/`https` et le port réels de la cible
+  (`443` pour `https://` sans port explicite, `80` pour `http://`) ;
+- le proxy **suit lui-même les redirections amont** (en conservant méthode,
+  corps et en-têtes, plafonné à 3 sauts) : le navigateur ne voit plus jamais de
+  redirection cross-origin et `Authorization` n'est donc jamais perdu.
+
+Vérification (le client doit recevoir `200`, jamais `301`) :
+
+```bash
+curl -s -o /dev/null -D - https://scoot-master-api.onrender.com/api/health | grep -i '^HTTP'
+# HTTP/2 200
+
+# via le proxy web : plus de 301, et le jeton traverse
+curl -s -o /dev/null -D - https://scoot-master-web.onrender.com/api/health | grep -i '^HTTP\|location'
+# HTTP/2 200  (aucun `location`)
+```
+
+L'API répond par ailleurs `Access-Control-Allow-Origin` de façon fiable
+(`backend/src/middleware/cors.js`) et traite elle-même le pré-vol (`204`), ce qui
+couvre les appels cross-origin légitimes (app mobile native, tests directs) :
 
 ```bash
 curl -s -o /dev/null -D - https://scoot-master-api.onrender.com/api/health \
   -H 'Origin: https://scoot-master-web.onrender.com' | grep -i access-control
 # doit contenir : access-control-allow-origin: https://scoot-master-web.onrender.com
 ```
+
+> Garde-fou de non-régression : `backend/tests/web-proxy.test.js` démarre un
+> amont réel qui redirige vers un backend réel et vérifie que le proxy suit le
+> `301` en conservant `Authorization`, la méthode `POST` et le corps.
 
 ---
 
@@ -388,7 +409,7 @@ npx expo start
 | Déconnexion après une nuit hors ligne | Jeton expiré au-delà de `JWT_REFRESH_GRACE` | Augmentez `JWT_REFRESH_GRACE` (défaut `60d`). En deçà, l'app renouvelle seule la session au retour du réseau |
 | Build web échoue `expo export` | Mémoire insuffisante (Free plan) | Passez le web en Starter (512 MB → 1 GB RAM). Ou augmentez `NODE_OPTIONS=--max-old-space-size=2048` en env var |
 | Base vide, pas de comptes | `SEED_ON_START=false` au premier démarrage | Mettez `SEED_ON_START=true`, redéployez. Vérifiez logs : seed ne s'exécute que si `users` vide |
-| CORS error / « 403 » depuis le web | `CORS_ORIGIN` trop restrictif, ou l'edge redirige `/api/*` vers l'API (appel cross-origin) | L'API renvoie désormais toujours `Access-Control-Allow-Origin` (auth par en-tête, sans cookie). Vérifiez avec `curl … -H 'Origin: https://scoot-master-web.onrender.com'` (voir « CORS et synchronisation »). Si le pré-vol `OPTIONS /api/sync/push` renvoie `307` au lieu de `204`, l'appel ne peut pas aboutir : gardez `CORS_ORIGIN=*` et n'activez pas `CORS_STRICT` |
+| CORS error / « 403 » depuis le web | Le proxy web redirigeait vers l'API (appel cross-origin, `Authorization` perdu sur `301`) | Corrigé : `deploy/web-server.js` suit les redirections amont et choisit le bon protocole/port. L'API renvoie toujours `Access-Control-Allow-Origin` (auth par en-tête, sans cookie). Vérifiez avec `curl … -H 'Origin: https://scoot-master-web.onrender.com'` (voir « CORS et synchronisation »). Si le pré-vol `OPTIONS /api/sync/push` renvoie `307` au lieu de `204`, l'appel ne peut pas aboutir : gardez `CORS_ORIGIN=*` et n'activez pas `CORS_STRICT` |
 | Disque plein | Trop de données / photos base64 | SQLite stocke les photos en JSON `[]` (chemins). Si vous stockez des base64, le disque grossit vite. Passez à un stockage S3/R2 pour les photos. Augmentez `sizeGB` dans `render.yaml` |
 
 **Commandes utiles (Shell Render) :**
