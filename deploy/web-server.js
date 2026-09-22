@@ -18,6 +18,7 @@
  */
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
@@ -78,27 +79,120 @@ function securityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
-/** Proxy HTTP minimal : relaie méthode, en-têtes et corps vers le backend. */
+/** Nombre maximal de redirections suivies côté serveur (garde-fou anti-boucle). */
+const MAX_REDIRECTS = 3;
+/** Taille maximale du corps conservée en mémoire pour pouvoir le rejouer. */
+const MAX_BUFFERED_BODY = Number(process.env.PROXY_MAX_BODY_BYTES || 16 * 1024 * 1024);
+
+/**
+ * Choisit le module de transport et le port effectif pour une URL cible.
+ *
+ * `new URL('https://hôte')` renvoie `port === ''` (443 implicite) : se fier à
+ * `port || 80` ouvrait donc une connexion **en clair sur le port 80** pour une
+ * cible `https://`, que l'edge de l'hébergeur refuse par un `301` vers HTTPS.
+ */
+function transportFor(target) {
+  const secure = target.protocol === 'https:';
+  // `URL.port` est une chaîne (et vide quand le port est implicite) : on
+  // normalise en nombre pour que le port effectif soit exploitable tel quel.
+  const port = target.port ? Number(target.port) : secure ? 443 : 80;
+  return { agent: secure ? https : http, port };
+}
+
+/**
+ * Proxy des routes `/api/*` vers le backend.
+ *
+ * Le corps est mis en tampon (borné) avant l'envoi afin de pouvoir être rejoué
+ * si l'amont redirige. Au-delà de la borne, on relaie en flux direct et on
+ * renonce au suivi de redirection : mieux vaut servir la réponse telle quelle
+ * que de charger un téléversement entier en mémoire.
+ */
 function proxyApi(req, res) {
-  const proxyReq = http.request(
+  const declared = Number(req.headers['content-length'] || 0);
+  if (declared > MAX_BUFFERED_BODY) return forward(req, res, API_URL, req.url, null);
+
+  const chunks = [];
+  let size = 0;
+  let aborted = false;
+  req.on('data', (chunk) => {
+    if (aborted) return; // le relais en flux a déjà été lancé : ne pas en créer un second
+    size += chunk.length;
+    if (size > MAX_BUFFERED_BODY) {
+      aborted = true;
+      return forward(req, res, API_URL, req.url, null, chunks);
+    }
+    chunks.push(chunk);
+  });
+  req.on('end', () => {
+    if (!aborted) forward(req, res, API_URL, req.url, Buffer.concat(chunks), []);
+  });
+  req.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Requête client interrompue.' }));
+    }
+  });
+}
+
+/**
+ * Envoie la requête à l'amont en suivant les redirections **côté serveur**.
+ *
+ * Suivre la redirection ici plutôt que de la laisser au navigateur est
+ * indispensable : la spécification Fetch impose de retirer `Authorization`
+ * lors d'une redirection cross-origin. Le navigateur rejouait donc `/api/*`
+ * sans jeton → 401/403 → synchronisation rompue (et un `POST` redirigé en
+ * `301` était de surcroît converti en `GET`). En suivant la redirection au
+ * niveau du proxy, le client ne voit jamais de redirection cross-origin.
+ *
+ * @param {Buffer|null} body corps rejouable, ou `null` pour relayer en flux
+ * @param {Buffer[]} [pending] fragments déjà lus à réinjecter avant la suite
+ * @param {number} [hop] nombre de redirections déjà suivies
+ */
+function forward(req, res, target, urlPath, body, pending, hop = 0) {
+  const { agent, port } = transportFor(target);
+  const proxyReq = agent.request(
     {
-      hostname: API_URL.hostname,
-      port: API_URL.port || 80,
-      path: req.url,
+      hostname: target.hostname,
+      port,
+      path: urlPath,
       method: req.method,
-      headers: { ...req.headers, host: API_URL.host },
+      headers: { ...req.headers, host: target.host },
     },
     (proxyRes) => {
+      const status = proxyRes.statusCode || 502;
+      const location = proxyRes.headers.location;
+      const isRedirect = location && status >= 301 && status <= 308;
+      // Rejouable seulement si le corps a été mis en tampon : sinon le flux
+      // source est déjà consommé et une seconde tentative enverrait un corps vide.
+      if (isRedirect && body !== null && urlPath !== null && hop < MAX_REDIRECTS) {
+        proxyRes.resume();
+        let next;
+        try {
+          next = new URL(location, target);
+        } catch {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Redirection amont invalide.' }));
+          return;
+        }
+        return forward(req, res, next, next.pathname + next.search, body, undefined, hop + 1);
+      }
       securityHeaders(res);
-      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      res.writeHead(status, proxyRes.headers);
       proxyRes.pipe(res);
     }
   );
   proxyReq.on('error', (err) => {
-    res.writeHead(502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Backend indisponible.', detail: err.message }));
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Backend indisponible.', detail: err.message }));
+    }
   });
-  req.pipe(proxyReq);
+  if (body === null) {
+    for (const chunk of pending || []) proxyReq.write(chunk);
+    req.pipe(proxyReq);
+  } else {
+    proxyReq.end(body);
+  }
 }
 
 function sendFile(res, filePath, status = 200) {
@@ -239,13 +333,17 @@ const server = http.createServer((req, res) => {
   res.end('Build web introuvable — lancez « npx expo export --platform web » dans mobile/.');
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🏍️  Scoot Master Web — http://0.0.0.0:${PORT}`);
-  console.log(`   statique : ${WEB_ROOT}`);
-  console.log(`   /api/*  → ${API_TARGET}`);
-  console.log(`   /install → page « Installer Scoot Master » (APK : ${fs.existsSync(APK_FILE) ? 'hébergé ici' : 'Release GitHub'})`);
-});
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🏍️  Scoot Master Web — http://0.0.0.0:${PORT}`);
+    console.log(`   statique : ${WEB_ROOT}`);
+    console.log(`   /api/*  → ${API_TARGET}`);
+    console.log(`   /install → page « Installer Scoot Master » (APK : ${fs.existsSync(APK_FILE) ? 'hébergé ici' : 'Release GitHub'})`);
+  });
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => server.close(() => process.exit(0)));
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => server.close(() => process.exit(0)));
+  }
 }
+
+module.exports = { server, proxyApi, transportFor, normalizeApiTarget, MAX_REDIRECTS, MAX_BUFFERED_BODY };

@@ -30,6 +30,13 @@ jobs:
   build-apk-gradle:
     name: 🤖 Build APK (Gradle local, sans EAS)
     runs-on: ubuntu-latest
+    # Sans cette autorisation explicite, le GITHUB_TOKEN par défaut est en
+    # lecture seule (durcissement des dépôts récents) et `softprops/action-gh-release`
+    # échoue en « 403 Resource not accessible by integration » : aucune Release
+    # n'est publiée, donc l'URL .../releases/latest/download/scoot-master-latest.apk
+    # utilisée par l'app renvoie 404.
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: mobile
