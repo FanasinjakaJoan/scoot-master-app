@@ -1,6 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 
-import { SCHEMA } from './schema';
+import { SCHEMA, migrateLocalSchema } from './schema';
 
 /**
  * Base SQLite locale (persistance hors ligne) — implémentation NATIVE.
@@ -23,6 +23,8 @@ import { SCHEMA } from './schema';
 export const localDb: SQLite.SQLiteDatabase = SQLite.openDatabaseSync('scootmaster.db');
 
 localDb.execSync(SCHEMA);
+// Base existante éventuellement créée avant l'ajout d'`owner_id`.
+migrateLocalSchema(localDb);
 
 export { SCHEMA, nowIso } from './schema';
 

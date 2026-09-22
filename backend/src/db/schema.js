@@ -9,6 +9,12 @@
  *  - `version`    : compteur incrémenté à chaque modification serveur.
  *  - `deleted_at` : horodatage de suppression logique (tombstone) — jamais de vraie suppression.
  *  - `device_id`  : appareil ayant effectué la dernière modification (tie-break déterministe).
+ *
+ * Isolation des données (Row-Level Security applicative) :
+ *  - `owner_id` : propriétaire de la ligne (id utilisateur). À la création, il
+ *    est forcé à l'utilisateur authentifié ; un utilisateur non-admin ne lit et
+ *    ne modifie que ses propres lignes (filtrage strict `owner_id = user.id`).
+ *    Un administrateur contourne ce filtre (accès global). Voir src/security/rls.js.
  */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -45,6 +51,7 @@ CREATE TABLE IF NOT EXISTS bikes (
   version            INTEGER NOT NULL DEFAULT 0,
   created_by         TEXT,
   updated_by         TEXT,
+  owner_id           TEXT,
   device_id          TEXT,
   deleted_at         TEXT
 );
@@ -52,6 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_bikes_status   ON bikes (status);
 CREATE INDEX IF NOT EXISTS idx_bikes_brand    ON bikes (brand);
 CREATE INDEX IF NOT EXISTS idx_bikes_updated  ON bikes (updated_at);
 CREATE INDEX IF NOT EXISTS idx_bikes_deleted  ON bikes (deleted_at);
+CREATE INDEX IF NOT EXISTS idx_bikes_owner    ON bikes (owner_id);
 
 CREATE TABLE IF NOT EXISTS customers (
   id           TEXT PRIMARY KEY,
@@ -66,11 +74,13 @@ CREATE TABLE IF NOT EXISTS customers (
   version      INTEGER NOT NULL DEFAULT 0,
   created_by   TEXT,
   updated_by   TEXT,
+  owner_id     TEXT,
   device_id    TEXT,
   deleted_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_customers_updated ON customers (updated_at);
 CREATE INDEX IF NOT EXISTS idx_customers_phone   ON customers (phone);
+CREATE INDEX IF NOT EXISTS idx_customers_owner   ON customers (owner_id);
 
 CREATE TABLE IF NOT EXISTS sales (
   id               TEXT PRIMARY KEY,
@@ -92,6 +102,7 @@ CREATE TABLE IF NOT EXISTS sales (
   version          INTEGER NOT NULL DEFAULT 0,
   created_by       TEXT,
   updated_by       TEXT,
+  owner_id         TEXT,
   device_id        TEXT,
   deleted_at       TEXT
 );
@@ -99,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_sales_status   ON sales (status);
 CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales (customer_id);
 CREATE INDEX IF NOT EXISTS idx_sales_updated  ON sales (updated_at);
 CREATE INDEX IF NOT EXISTS idx_sales_deleted  ON sales (deleted_at);
+CREATE INDEX IF NOT EXISTS idx_sales_owner    ON sales (owner_id);
 
 CREATE TABLE IF NOT EXISTS sale_items (
   id          TEXT PRIMARY KEY,
@@ -116,6 +128,22 @@ CREATE TABLE IF NOT EXISTS sale_counters (
   year INTEGER PRIMARY KEY,
   last INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  at           TEXT NOT NULL,
+  actor_id     TEXT,
+  actor_role   TEXT,
+  action       TEXT NOT NULL,
+  entity       TEXT,
+  entity_id    TEXT,
+  owner_id     TEXT,
+  admin_access INTEGER NOT NULL DEFAULT 0,
+  details      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at      ON audit_log (at);
+CREATE INDEX IF NOT EXISTS idx_audit_entity  ON audit_log (entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_log (actor_id);
 `;
 
 module.exports = { SCHEMA };

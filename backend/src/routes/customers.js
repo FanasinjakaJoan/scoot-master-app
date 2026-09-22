@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { uuid, nowIso } = require('../util/ids');
+const { appendOwnerFilter, findScoped, ownerForCreate, audit } = require('../security/rls');
 
 module.exports = function customerRoutes(db) {
   const r = express.Router();
@@ -11,16 +12,18 @@ module.exports = function customerRoutes(db) {
   /** GET /api/customers?q=&page=&limit= */
   r.get('/', (req, res) => {
     const { q, page = 1, limit = 50 } = req.query;
-    const where = ['deleted_at IS NULL'];
+    // Isolation : agrégats d'achats calculés uniquement sur les ventes visibles.
+    const where = ['c.deleted_at IS NULL'];
     const args = [];
     if (q) {
-      where.push('(first_name LIKE ? OR last_name LIKE ? OR phone LIKE ? OR email LIKE ?)');
+      where.push('(c.first_name LIKE ? OR c.last_name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)');
       const like = `%${q}%`;
       args.push(like, like, like, like);
     }
+    appendOwnerFilter(req, where, args, 'c');
     const lim = Math.min(Number(limit) || 50, 200);
     const off = (Math.max(1, Number(page) || 1) - 1) * lim;
-    const total = db.prepare(`SELECT COUNT(*) AS n FROM customers WHERE ${where.join(' AND ')}`).get(...args).n;
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM customers c WHERE ${where.join(' AND ')}`).get(...args).n;
     const items = db.prepare(`
       SELECT c.*,
         (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.deleted_at IS NULL) AS nb_sales,
@@ -33,14 +36,14 @@ module.exports = function customerRoutes(db) {
   });
 
   r.get('/:id', (req, res) => {
-    const row = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'customers', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Client introuvable.' });
     res.json({ customer: row });
   });
 
   /** GET /api/customers/:id/purchases — historique des achats du client. */
   r.get('/:id/purchases', (req, res) => {
-    const row = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'customers', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Client introuvable.' });
     const sales = db.prepare(`
       SELECT s.* FROM sales s WHERE s.customer_id = ? AND s.deleted_at IS NULL ORDER BY s.sale_date DESC
@@ -55,7 +58,7 @@ module.exports = function customerRoutes(db) {
     });
   });
 
-  /** POST /api/customers */
+  /** POST /api/customers — le propriétaire est l'appelant. */
   r.post('/', (req, res) => {
     const d = req.body || {};
     if (!d.first_name || !d.last_name || !d.phone) {
@@ -63,19 +66,21 @@ module.exports = function customerRoutes(db) {
     }
     const ts = nowIso();
     const id = d.id || uuid();
+    const ownerId = ownerForCreate(req, d.owner_id);
     db.prepare(`
       INSERT INTO customers (id, first_name, last_name, phone, email, address, notes,
-        created_at, updated_at, version, created_by, updated_by, device_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        created_at, updated_at, version, created_by, updated_by, owner_id, device_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
     `).run(id, d.first_name, d.last_name, d.phone, d.email || null, d.address || null, d.notes || null,
-      ts, ts, req.user.id, req.user.id, req.user.deviceId || null);
+      ts, ts, req.user.id, req.user.id, ownerId, req.user.deviceId || null);
     const row = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
+    audit(db, { req, action: 'customer.create', entity: 'customers', entityId: id, ownerId });
     res.status(201).json({ customer: row });
   });
 
-  /** PUT /api/customers/:id */
+  /** PUT /api/customers/:id — propriétaire ou admin. */
   r.put('/:id', (req, res) => {
-    const row = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'customers', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Client introuvable.' });
     const d = req.body || {};
     const fields = [];
@@ -88,15 +93,17 @@ module.exports = function customerRoutes(db) {
     args.push(nowIso(), req.user.id, req.params.id);
     db.prepare(`UPDATE customers SET ${fields.join(', ')} WHERE id = ?`).run(...args);
     const after = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
+    audit(db, { req, action: 'customer.update', entity: 'customers', entityId: req.params.id, ownerId: row.owner_id });
     res.json({ customer: after });
   });
 
   /** DELETE /api/customers/:id (admin uniquement) */
   r.delete('/:id', requireRole('admin'), (req, res) => {
-    const row = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'customers', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Client introuvable.' });
     db.prepare('UPDATE customers SET deleted_at = ?, updated_at = ?, updated_by = ? WHERE id = ?')
       .run(nowIso(), nowIso(), req.user.id, req.params.id);
+    audit(db, { req, action: 'customer.delete', entity: 'customers', entityId: req.params.id, ownerId: row.owner_id, details: { byAdmin: true } });
     res.json({ ok: true });
   });
 

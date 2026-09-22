@@ -59,12 +59,20 @@ avec résolution de conflits et exports JSON/CSV.
   écriture) ou manuelle (bouton « Synchroniser »).
 - Protocole **push** (opérations locales → serveur) / **pull** (changements serveur →
   local, avec curseur paginé) et arbitrage **Last-Write-Wins** sur horodatages ISO.
+- **Isolation des données (Row-Level Security)** : chaque vendeur ne peut lire,
+  modifier ou vendre que *ses propres* lignes (`owner_id`) ; toute donnée d'autrui
+  est invisible. Le rôle **admin** (RBAC) contourne ce filtre et accède à
+  l'intégralité des données. `owner_id` est imposé par le serveur (impossible à
+  usurper depuis le client).
 - **Gestion des conflits** : écran dédié, choix « conserver la version serveur » ou
   « forcer ma version » (réservé au rôle **admin** = validation administrative),
   relance des opérations échouées.
 - **Exports & sauvegarde** : JSON ou CSV par entité depuis la base locale (fonctionne
   hors ligne), partage via la fiche de partage du téléphone, sauvegarde complète JSON
   et téléversement de la sauvegarde sur le serveur.
+- **Sauvegarde automatisée vers Google Drive** : une tâche planifiée interne exporte
+  régulièrement toute la base (JSON/CSV) et la téléverse sur Google Drive via
+  l'API officielle, authentifiée par **compte de service** (voir §Configuration).
 - Indicateur de statut permanent : *En ligne / Hors ligne* + *Données à jour /
   X modifications en attente / Y conflits à résoudre*.
 
@@ -129,8 +137,58 @@ npm start            # http://localhost:4000  (données de démo automatiquement
 - Comptes de démo : **admin / admin123** (administrateur) et **vendeur / vendeur123**.
 
 ```bash
-npm test             # 26 tests : auth, rôles, CRUD, ventes, exports, sauvegardes, sync LWW/conflicts
+npm test             # tests : auth, rôles, CRUD, ventes, exports, sauvegardes, sync LWW/conflicts, RLS & Google Drive
 ```
+
+#### 🔐 Variables d'environnement
+
+Toutes les variables sont documentées dans [`backend/.env.example`](backend/.env.example).
+
+| Variable | Rôle |
+|---|---|
+| `PORT` | Port d'écoute de l'API (défaut `4000`) |
+| `JWT_SECRET` | Secret de signature des jetons — **à changer en production** |
+| `CORS_ORIGIN` | Origines autorisées (`*` par défaut) |
+| `SEED_ON_START` | Jeu de démo au démarrage (`true`/`false`) |
+| `BACKUP_ENABLED` | Active la tâche planifiée de sauvegarde Google Drive |
+| `GOOGLE_CLIENT_EMAIL` | E-mail du **compte de service** Google |
+| `GOOGLE_PRIVATE_KEY` | Clé privée PEM du compte de service (`\n` littéraux acceptés) |
+| `GOOGLE_DRIVE_FOLDER_ID` | Dossier Drive cible (partagé avec le compte de service) |
+| `BACKUP_INTERVAL_HOURS` | Intervalle entre deux sauvegardes (défaut `24`) |
+| `BACKUP_FORMAT` | Format du fichier envoyé : `json` (défaut) ou `csv` |
+
+#### ☁️ Sauvegarde automatisée sur Google Drive
+
+La sauvegarde utilise un **compte de service** Google (aucune interaction humaine) :
+
+1. **Google Cloud Console** → *IAM & Admin* → *Comptes de service* → **Créer**.
+2. Onglet *Clés* → **Ajouter une clé → JSON** : récupérez `client_email`
+   (`GOOGLE_CLIENT_EMAIL`) et `private_key` (`GOOGLE_PRIVATE_KEY`).
+3. **Google Drive** → créez un dossier, puis **partagez-le** (rôle *Éditeur*) avec
+   l'e-mail du compte de service. Sans ce partage, l'API répond `403`/`404`.
+   L'id du dossier (`GOOGLE_DRIVE_FOLDER_ID`) est la partie après `/folders/` dans
+   l'URL. Le compte de service n'accède **qu'à** ce dossier (principe de moindre
+   privilège, portée `drive.file`).
+4. Renseignez les variables et passez `BACKUP_ENABLED=true`. La tâche planifiée
+   démarre avec le serveur et téléverse une sauvegarde toutes les
+   `BACKUP_INTERVAL_HOURS` heures.
+
+Déclenchement manuel (admin) :
+
+```bash
+curl -X POST https://scoot-master-api.onrender.com/api/exports/backup/drive \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"format":"json"}'
+
+# Liste des sauvegardes présentes sur Drive
+curl https://scoot-master-api.onrender.com/api/exports/backup/drive \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Un CRON externe (Render Cron Job, GitHub Actions…) peut appeler cette route avec
+un jeton admin au lieu d'utiliser la tâche interne. La sauvegarde contient
+**toutes** les données (elle ignore volontairement l'isolation `owner_id`) et
+n'inclut **jamais** les empreintes de mots de passe.
 
 ### 2. Application mobile
 
@@ -184,9 +242,9 @@ npm run smoke:web -- --login admin admin123   # + session, sync pull, accueil, o
 
 | Couche | Commande | Contenu |
 |---|---|---|
-| Backend | `cd backend && npm test` | 47 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro**, **révocation effective sur toutes les routes protégées** (compte supprimé/désactivé → 401, rôle lu en base) |
+| Backend | `cd backend && npm test` | 87 tests : auth JWT, rôles, CRUD, ventes (total, effets de domaine), exports JSON/CSV, sauvegarde (téléversement + liste admin), sync push/pull, LWW, conflits, `force` admin, renumérotation **et stabilité** du numéro de bon, pagination par curseur, **session longue + renouvellement + continuité pendant la synchro**, **révocation effective sur toutes les routes protégées** (compte supprimé/désactivé → 401, rôle lu en base), **isolation RLS** (lecture/modification/suppression/vente cross-utilisateur, contournement admin, `owner_id` non usurpable) et **sauvegarde Google Drive** (JWT de compte de service RS256, échange de jeton, upload multipart, dump sans mot de passe, 502/503 explicites) |
 | API réelle | `cd backend && npm run check:api` | 48 contrôles de bout en bout contre le serveur **démarré** (vrai SQLite + stockage) : auth/rôles, push/pull + curseur, LWW, `force`, idempotence, ventes, tombstones, exports, sauvegarde (téléchargement / téléversement / liste admin). `BASE=https://… npm run check:api` pour viser un déploiement |
-| Mobile | `cd mobile && npm test` | 74 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde) |
+| Mobile | `cd mobile && npm test` | 82 tests : moteur LWW (arbitrage, tie-break, pull), génération CSV, formatage, identifiants hors ligne, adaptateur SQLite web (schéma, LIKE/agrégats, upsert, file de synchro, transactions et savepoints), **sauvegarde/exports locaux** (JSON complet, tombstones, CSV), **raccourci d'installation** (détection Android/iOS/bureau, plan affiché), **maintien de session pendant la synchro** (proactif/réactif, refus vs transitoire, force, sauvegarde), **propriété locale `owner_id`** (persistance, pull, sauvegarde) et **migration de schéma locale** |
 | Mobile (types) | `cd mobile && npx tsc --noEmit` | vérification TypeScript stricte |
 | Web (rendu) | `cd mobile && npm run smoke:web` | le build exporté est servi puis exécuté dans un DOM simulé (jsdom) : écran rendu, **0 erreur runtime** — avec `-- --login admin admin123`, la session, le pull de synchronisation et la navigation sont validés ; avec `-- --stale-session`, une session dont le jeton est refusé par le serveur est validée via `POST /api/auth/check` (**toujours 200, ZÉRO 401**) puis retour à l'écran de connexion, aucun appel métier |
 | Bundle | `cd mobile && npx expo export --platform web` | vérifie que l'app complète se bundle (web, WASM de SQLite inclus) |
@@ -326,8 +384,13 @@ Résumé (détail : [docs/SYNC.md](docs/SYNC.md)) :
   compte supprimé ou désactivé perd l'accès immédiatement (401 `revoked: true` sur les
   routes métier, ou `{ valid:false, revoked:true }` en 200 sur `/check`/`refresh-safe`),
   et le rôle autorisé est celui de la base — pas celui revendiqué dans le jeton.
-- Rôles : `admin` (suppressions, validation de conflits, sauvegardes serveur) et
-  `seller` (catalogue, ventes, clients).
+- Rôles : `admin` (accès **à toutes les données** — contourne l'isolation par
+  `owner_id` — plus suppressions, validation de conflits, sauvegardes serveur et
+  Google Drive) et `seller` (confiné à ses propres motos, ventes et clients).
+- **Isolation par utilisateur** : les tables `bikes`, `customers`, `sales` portent
+  un `owner_id`, imposé par le serveur à la création. Un `seller` ne voit et ne
+  modifie que ses lignes ; les accès hors périmètre renvoient `404` (non-divulgation).
+  Toutes les actions sensibles sont journalisées dans `audit_log`.
 - En production : changer `JWT_SECRET`, activer HTTPS. Laissez `CORS_ORIGIN=*` :
   l'API s'authentifie par en-tête (aucun cookie), et une liste blanche coupe la
   synchronisation dès que l'app web est servie sur une origine différente de l'API.

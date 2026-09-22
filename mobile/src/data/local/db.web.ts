@@ -3,7 +3,7 @@ import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 // Cible web ⇒ l'import renvoie l'URL de l'asset ; ailleurs `{ uri }` (toléré).
 import wasmAssetUrl from 'sql.js/dist/sql-wasm.wasm';
 
-import { SCHEMA } from './schema';
+import { SCHEMA, migrateLocalSchema } from './schema';
 import { rowsFromQueryResults, toBindValues } from './sqlite-values';
 
 /**
@@ -161,6 +161,8 @@ class WebSQLiteDatabase {
     const database = new engine.Database(snapshot ?? undefined);
     database.run(SCHEMA);
     this.handle = database;
+    // Base restaurée d'un instantané antérieur : on ajoute les colonnes nouvelles.
+    migrateLocalSchema(this);
     this.watchLifecycle();
   }
 

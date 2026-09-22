@@ -236,13 +236,13 @@ export function saveBike(input: Partial<Bike> & { id: string }, actor: { userId:
       localDb.runSync(
         `INSERT INTO bikes (id, brand, model, year, mileage_km, engine_cc, color, serial_number, price, currency,
            mechanical_state, aesthetic_state, status, description, warehouse, photos,
-           created_at, updated_at, version, created_by, updated_by, device_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           created_at, updated_at, version, created_by, updated_by, owner_id, device_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
         b.id, b.brand, b.model ?? null, b.year ?? null, b.mileage_km ?? 0, b.engine_cc ?? null,
         b.color ?? null, b.serial_number ?? null, b.price ?? 0, b.currency || 'MGA',
         b.mechanical_state ?? 3, b.aesthetic_state ?? 3, b.status || 'available',
         b.description ?? null, b.warehouse ?? null, JSON.stringify(b.photos || []),
-        ts, ts, actor.userId, actor.userId, actor.deviceId
+        ts, ts, actor.userId, actor.userId, actor.userId, actor.deviceId
       );
     } else {
       localDb.runSync(
@@ -354,10 +354,10 @@ export function saveCustomer(input: Partial<Customer> & { id: string }, actor: {
     if (!existing) {
       localDb.runSync(
         `INSERT INTO customers (id, first_name, last_name, phone, email, address, notes,
-           created_at, updated_at, version, created_by, updated_by, device_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           created_at, updated_at, version, created_by, updated_by, owner_id, device_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
         c.id, c.first_name, c.last_name, c.phone, c.email ?? null, c.address ?? null, c.notes ?? null,
-        ts, ts, actor.userId, actor.userId, actor.deviceId
+        ts, ts, actor.userId, actor.userId, actor.userId, actor.deviceId
       );
     } else {
       localDb.runSync(
@@ -460,11 +460,11 @@ export function saveSale(input: {
     if (!existing) {
       localDb.runSync(
         `INSERT INTO sales (id, sale_number, customer_id, total, discount, amount_paid, payment_method,
-           payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, device_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, owner_id, device_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
         input.id, input.sale_number || nextLocalSaleNumber(), input.customer_id, total,
         input.discount || 0, paid, input.payment_method || 'cash', paymentStatus, status, saleDate,
-        input.notes ?? null, ts, ts, actor.userId, actor.userId, actor.deviceId
+        input.notes ?? null, ts, ts, actor.userId, actor.userId, actor.userId, actor.deviceId
       );
     } else {
       localDb.runSync(
@@ -617,26 +617,26 @@ export function applyServerChange(entity: EntityName, id: string, op: 'upsert' |
         localDb.runSync(
           `INSERT INTO bikes (id, brand, model, year, mileage_km, engine_cc, color, serial_number, price, currency,
              mechanical_state, aesthetic_state, status, description, warehouse, photos,
-             created_at, updated_at, version, created_by, updated_by, device_id, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             created_at, updated_at, version, created_by, updated_by, owner_id, device_id, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id, bind(d.brand), bind(d.model), bind(d.year), bind(d.mileage_km), bind(d.engine_cc), bind(d.color),
           bind(d.serial_number), bind(d.price), String(d.currency || 'MGA'), bind(d.mechanical_state),
           bind(d.aesthetic_state), String(bind(d.status) ?? 'available'), bind(d.description), bind(d.warehouse),
           photosJson, bind(d.created_at) || updatedAt, bind(d.updated_at) || updatedAt, version,
-          bind(d.created_by), bind(d.updated_by), bind(d.device_id), bind(d.deleted_at)
+          bind(d.created_by), bind(d.updated_by), bind(d.owner_id), bind(d.device_id), bind(d.deleted_at)
         );
       } else {
         localDb.runSync(
           `UPDATE bikes SET brand = ?, model = ?, year = ?, mileage_km = ?, engine_cc = ?, color = ?,
              serial_number = ?, price = ?, currency = ?, mechanical_state = ?, aesthetic_state = ?,
              status = ?, description = ?, warehouse = ?, photos = ?,
-             updated_at = ?, version = ?, updated_by = ?, device_id = ?, deleted_at = ?
+             updated_at = ?, version = ?, updated_by = ?, owner_id = ?, device_id = ?, deleted_at = ?
            WHERE id = ?`,
           bind(d.brand), bind(d.model), bind(d.year), bind(d.mileage_km), bind(d.engine_cc), bind(d.color),
           bind(d.serial_number), bind(d.price), String(d.currency || 'MGA'), bind(d.mechanical_state),
           bind(d.aesthetic_state), String(bind(d.status) ?? 'available'), bind(d.description), bind(d.warehouse),
-          photosJson, bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.device_id),
-          bind(d.deleted_at), id
+          photosJson, bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.owner_id),
+          bind(d.device_id), bind(d.deleted_at), id
         );
       }
     } else if (entity === 'customers') {
@@ -644,20 +644,20 @@ export function applyServerChange(entity: EntityName, id: string, op: 'upsert' |
       if (!exists) {
         localDb.runSync(
           `INSERT INTO customers (id, first_name, last_name, phone, email, address, notes,
-             created_at, updated_at, version, created_by, updated_by, device_id, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             created_at, updated_at, version, created_by, updated_by, owner_id, device_id, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id, bind(d.first_name), bind(d.last_name), bind(d.phone), bind(d.email), bind(d.address), bind(d.notes),
           bind(d.created_at) || updatedAt, bind(d.updated_at) || updatedAt, version,
-          bind(d.created_by), bind(d.updated_by), bind(d.device_id), bind(d.deleted_at)
+          bind(d.created_by), bind(d.updated_by), bind(d.owner_id), bind(d.device_id), bind(d.deleted_at)
         );
       } else {
         localDb.runSync(
           `UPDATE customers SET first_name = ?, last_name = ?, phone = ?, email = ?, address = ?, notes = ?,
-             updated_at = ?, version = ?, updated_by = ?, device_id = ?, deleted_at = ?
+             updated_at = ?, version = ?, updated_by = ?, owner_id = ?, device_id = ?, deleted_at = ?
            WHERE id = ?`,
           bind(d.first_name), bind(d.last_name), bind(d.phone), bind(d.email), bind(d.address), bind(d.notes),
-          bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.device_id),
-          bind(d.deleted_at), id
+          bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.owner_id),
+          bind(d.device_id), bind(d.deleted_at), id
         );
       }
     } else {
@@ -666,25 +666,25 @@ export function applyServerChange(entity: EntityName, id: string, op: 'upsert' |
       if (!exists) {
         localDb.runSync(
           `INSERT INTO sales (id, sale_number, customer_id, total, discount, amount_paid, payment_method,
-             payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, device_id, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, owner_id, device_id, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id, bind(d.sale_number), bind(d.customer_id), bind(d.total), bind(d.discount), bind(d.amount_paid),
           String(d.payment_method || 'cash'), String(d.payment_status || 'unpaid'), String(d.status || 'brouillon'),
           bind(d.sale_date) || updatedAt.slice(0, 10), bind(d.notes), bind(d.created_at) || updatedAt,
           bind(d.updated_at) || updatedAt, version, bind(d.created_by), bind(d.updated_by),
-          bind(d.device_id), bind(d.deleted_at)
+          bind(d.owner_id), bind(d.device_id), bind(d.deleted_at)
         );
       } else {
         localDb.runSync(
           `UPDATE sales SET sale_number = ?, customer_id = ?, total = ?, discount = ?, amount_paid = ?,
              payment_method = ?, payment_status = ?, status = ?, sale_date = ?, notes = ?,
-             updated_at = ?, version = ?, updated_by = ?, device_id = ?, deleted_at = ?
+             updated_at = ?, version = ?, updated_by = ?, owner_id = ?, device_id = ?, deleted_at = ?
            WHERE id = ?`,
           bind(d.sale_number), bind(d.customer_id), bind(d.total), bind(d.discount), bind(d.amount_paid),
           String(d.payment_method || 'cash'), String(d.payment_status || 'unpaid'), String(d.status || 'brouillon'),
           bind(d.sale_date) || updatedAt.slice(0, 10), bind(d.notes),
-          bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.device_id),
-          bind(d.deleted_at), id
+          bind(d.updated_at) || updatedAt, version, bind(d.updated_by), bind(d.owner_id),
+          bind(d.device_id), bind(d.deleted_at), id
         );
       }
       if (Array.isArray(d.items)) {

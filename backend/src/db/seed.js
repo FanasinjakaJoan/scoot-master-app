@@ -6,14 +6,17 @@ const bcrypt = require('bcryptjs');
 const uuid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 
-/** Crée les comptes de démonstration (admin + vendeur). */
+/** Crée les comptes de démonstration (admin + vendeur). Renvoie leurs ids. */
 function seedUsers(db) {
   const ts = now();
   const insertUser = db.prepare(
     'INSERT INTO users (id, username, password_hash, full_name, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
-  insertUser.run(uuid(), 'admin', bcrypt.hashSync('admin123', 10), 'Fana Rakoto (Admin)', 'admin', ts, ts);
-  insertUser.run(uuid(), 'vendeur', bcrypt.hashSync('vendeur123', 10), 'Hery Andrianja (Vendeur)', 'seller', ts, ts);
+  const adminId = uuid();
+  const sellerId = uuid();
+  insertUser.run(adminId, 'admin', bcrypt.hashSync('admin123', 10), 'Fana Rakoto (Admin)', 'admin', ts, ts);
+  insertUser.run(sellerId, 'vendeur', bcrypt.hashSync('vendeur123', 10), 'Hery Andrianja (Vendeur)', 'seller', ts, ts);
+  return { adminId, sellerId };
 }
 
 /**
@@ -24,15 +27,15 @@ function seedUsers(db) {
 function seedIfEmpty(db, { usersOnly = false } = {}) {
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get();
   if (n > 0) return false;
-  seedUsers(db);
+  const { adminId } = seedUsers(db);
   if (usersOnly) return true;
 
   const ts = now();
   const insertBike = db.prepare(`
     INSERT INTO bikes (id, brand, model, year, mileage_km, engine_cc, color, serial_number, price,
       currency, mechanical_state, aesthetic_state, status, description, warehouse, photos,
-      created_at, updated_at, version, created_by, device_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'MGA', ?, ?, ?, ?, 'Magasin Antananarivo', '[]', ?, ?, 1, 'seed', 'seed')
+      created_at, updated_at, version, created_by, owner_id, device_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'MGA', ?, ?, ?, ?, 'Magasin Antananarivo', '[]', ?, ?, 1, 'seed', ?, 'seed')
   `);
 
   const bikes = [
@@ -48,11 +51,11 @@ function seedIfEmpty(db, { usersOnly = false } = {}) {
     ['Honda', 'Wave 110i', 2023, 63000, 110, 'Orange', 'HON-2023-41276', 2700000, 5, 5, 'available', 'Cub 110 4T, garantie constructeur restante.'],
     ['Yamaha', 'TMAX 530', 2020, 24500, 280, 'Gris', 'YAM-2020-77810', 5200000, 4, 4, 'available', 'Scooter 280 premium, entretien Yamaha complet.'],
   ];
-  for (const b of bikes) insertBike.run(uuid(), ...b, ts, ts);
+  for (const b of bikes) insertBike.run(uuid(), ...b, ts, ts, adminId);
 
   const insertCustomer = db.prepare(`
-    INSERT INTO customers (id, first_name, last_name, phone, email, address, notes, created_at, updated_at, version, created_by, device_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'seed', 'seed')
+    INSERT INTO customers (id, first_name, last_name, phone, email, address, notes, created_at, updated_at, version, created_by, owner_id, device_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'seed', ?, 'seed')
   `);
   const customers = [
     ['Rakoto', 'Jean', '+261 34 01 234 56', 'rakoto.jean@example.mg', 'Antananarivo, Analakely', 'Client fidèle, 2 achats précédents.'],
@@ -63,7 +66,7 @@ function seedIfEmpty(db, { usersOnly = false } = {}) {
   ];
   const customerIds = customers.map((c) => {
     const id = uuid();
-    insertCustomer.run(id, ...c, ts, ts);
+    insertCustomer.run(id, ...c, ts, ts, adminId);
     return id;
   });
 
@@ -71,8 +74,8 @@ function seedIfEmpty(db, { usersOnly = false } = {}) {
 
   const insertSale = db.prepare(`
     INSERT INTO sales (id, sale_number, customer_id, total, discount, amount_paid, payment_method,
-      payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, device_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'seed', 'seed')
+      payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, owner_id, device_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'seed', ?, 'seed')
   `);
   const insertItem = db.prepare(
     'INSERT INTO sale_items (id, sale_id, bike_id, unit_price, quantity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -81,18 +84,18 @@ function seedIfEmpty(db, { usersOnly = false } = {}) {
   const y = new Date().getFullYear();
   const saleA = uuid();
   insertSale.run(saleA, `BC-${y}-0001`, customerIds[0], 2850000, 50000, 2800000, 'cash', 'paid',
-    'livre', '2026-06-12', 'Livraison Antananarivo.', ts, ts);
+    'livre', '2026-06-12', 'Livraison Antananarivo.', ts, ts, adminId);
   insertItem.run(uuid(), saleA, bikeIds[2], 2900000, 1, ts, ts);
   // total = 2 900 000 - 50 000 = 2 850 000
 
   const saleB = uuid();
   insertSale.run(saleB, `BC-${y}-0002`, customerIds[1], 3950000, 0, 1000000, 'transfer', 'partial',
-    'confirme', '2026-08-28', 'Solde attendu fin septembre.', ts, ts);
+    'confirme', '2026-08-28', 'Solde attendu fin septembre.', ts, ts, adminId);
   insertItem.run(uuid(), saleB, bikeIds[5], 3950000, 1, ts, ts);
 
   const saleC = uuid();
   insertSale.run(saleC, `BC-${y}-0003`, customerIds[2], 1800000, 100000, 1700000, 'cash', 'paid',
-    'confirme', '2026-09-02', null, ts, ts);
+    'confirme', '2026-09-02', null, ts, ts, adminId);
   insertItem.run(uuid(), saleC, bikeIds[4], 1900000, 1, ts, ts);
 
   db.prepare('INSERT INTO sale_counters (year, last) VALUES (?, 3)').run(y);

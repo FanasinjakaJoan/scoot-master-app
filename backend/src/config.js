@@ -82,6 +82,23 @@ function normalizeOrigin(entry) {
 
 const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
 
+/**
+ * Normalise une clé privée de compte de service Google.
+ * Les tableaux de bord et `.env` transmettent souvent la clé sur une seule
+ * ligne avec des `\n` littéraux (les vraies retours à la ligne cassent le
+ * parsing des fichiers d'environnement) : on les restaure ici.
+ */
+function parsePrivateKey(value) {
+  if (!value) return '';
+  return String(value).replace(/\\n/g, '\n').trim();
+}
+
+/** Durée (en heures) entre deux sauvegardes automatiques Google Drive. */
+function parseBackupIntervalHours(value, fallback = 24) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 const config = {
   port: Number(process.env.PORT || 4000),
   dbPath: process.env.DB_PATH || path.join(__dirname, '..', 'data', 'scoot.db'),
@@ -99,6 +116,34 @@ const config = {
    */
   corsStrict: String(process.env.CORS_STRICT).toLowerCase() === 'true',
   seedOnStart: String(process.env.SEED_ON_START).toLowerCase() !== 'false',
+
+  /**
+   * Sauvegarde automatisée vers Google Drive (compte de service).
+   * `enabled` n'est vrai que si un compte de service complet est configuré
+   * (e-mail client + clé privée) : sans ces deux valeurs, la fonctionnalité
+   * reste silencieusement inerte et l'API démarre normalement.
+   */
+  backup: {
+    googleClientEmail: process.env.GOOGLE_CLIENT_EMAIL || '',
+    googlePrivateKey: parsePrivateKey(process.env.GOOGLE_PRIVATE_KEY),
+    /** Dossier Drive cible (partagé avec le compte de service). Vide = racine. */
+    googleDriveFolderId: process.env.GOOGLE_DRIVE_FOLDER_ID || '',
+    googleDriveFolderName: process.env.GOOGLE_DRIVE_FOLDER_NAME || 'Scoot Master Backups',
+    /** Format d'export : `json` (dump applicatif) ; `csv` généré en plus si demandé. */
+    format: (process.env.BACKUP_FORMAT || 'json').toLowerCase() === 'csv' ? 'csv' : 'json',
+    /** Planification CRON interne (intervalle en heures). 0 désactive. */
+    intervalHours: parseBackupIntervalHours(process.env.BACKUP_INTERVAL_HOURS, 24),
+    enabled: String(process.env.BACKUP_ENABLED).toLowerCase() === 'true',
+    /** Serveur de jetons OAuth2 du compte de service. */
+    tokenUri: process.env.GOOGLE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
+    driveApiBase: process.env.GOOGLE_DRIVE_API_BASE || 'https://www.googleapis.com/drive/v3',
+    uploadApiBase: process.env.GOOGLE_UPLOAD_API_BASE || 'https://www.googleapis.com/upload/drive/v3',
+  },
 };
 
-module.exports = { config, ttlToSeconds, parseCorsOrigins };
+/** Vrai si un compte de service Google complet est configuré. */
+config.backup.googleConfigured = Boolean(
+  config.backup.googleClientEmail && config.backup.googlePrivateKey
+);
+
+module.exports = { config, ttlToSeconds, parseCorsOrigins, parsePrivateKey };

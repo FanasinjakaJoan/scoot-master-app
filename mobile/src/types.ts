@@ -38,6 +38,7 @@ export interface Bike {
   version: number;
   created_by: string | null;
   updated_by: string | null;
+  owner_id: string | null;
   device_id: string | null;
   deleted_at: string | null;
 }
@@ -55,6 +56,7 @@ export interface Customer {
   version: number;
   created_by: string | null;
   updated_by: string | null;
+  owner_id: string | null;
   device_id: string | null;
   deleted_at: string | null;
 }
@@ -84,6 +86,7 @@ export interface Sale {
   version: number;
   created_by: string | null;
   updated_by: string | null;
+  owner_id: string | null;
   device_id: string | null;
   deleted_at: string | null;
   items?: SaleItem[];

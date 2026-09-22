@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { uuid, nowIso } = require('../util/ids');
 const { allocateSaleNumber } = require('../util/ids');
+const { appendOwnerFilter, findScoped, ownerForCreate, audit } = require('../security/rls');
 
 module.exports = function saleRoutes(db) {
   const r = express.Router();
@@ -18,6 +19,8 @@ module.exports = function saleRoutes(db) {
     if (customerId) { where.push('s.customer_id = ?'); args.push(customerId); }
     if (from) { where.push('s.sale_date >= ?'); args.push(from); }
     if (to) { where.push('s.sale_date <= ?'); args.push(to); }
+    // Isolation : un vendeur ne voit que SES ventes ; l'admin voit tout.
+    appendOwnerFilter(req, where, args, 's');
     const lim = Math.min(Number(limit) || 50, 200);
     const off = (Math.max(1, Number(page) || 1) - 1) * lim;
     const total = db.prepare(`SELECT COUNT(*) AS n FROM sales s WHERE ${where.join(' AND ')}`).get(...args).n;
@@ -41,18 +44,15 @@ module.exports = function saleRoutes(db) {
   });
 
   r.get('/:id', (req, res) => {
-    const s = db.prepare(`
-      SELECT s.*, c.first_name, c.last_name, c.phone
-      FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
-      WHERE s.id = ? AND s.deleted_at IS NULL
-    `).get(req.params.id);
+    const s = findScoped(db, req, 'sales', req.params.id, 'deleted_at IS NULL');
     if (!s) return res.status(404).json({ error: 'Vente introuvable.' });
+    const cust = s.customer_id ? db.prepare('SELECT first_name, last_name, phone FROM customers WHERE id = ?').get(s.customer_id) : null;
     const itemStmt = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?');
     const bikeStmt = db.prepare('SELECT id, brand, model, price FROM bikes WHERE id = ?');
     res.json({
       sale: {
         ...s,
-        customer: s.customer_id ? { id: s.customer_id, first_name: s.first_name, last_name: s.last_name, phone: s.phone } : null,
+        customer: s.customer_id ? { id: s.customer_id, first_name: cust?.first_name, last_name: cust?.last_name, phone: cust?.phone } : null,
         items: itemStmt.all(s.id).map((it) => ({ ...it, bike: bikeStmt.get(it.bike_id) || null })),
       },
     });
@@ -63,11 +63,13 @@ module.exports = function saleRoutes(db) {
     const d = req.body || {};
     if (!d.customer_id) return res.status(400).json({ error: 'client_id requis.' });
     if (!Array.isArray(d.items) || !d.items.length) return res.status(400).json({ error: 'Au moins une ligne de vente requise.' });
-    const customer = db.prepare('SELECT id FROM customers WHERE id = ? AND deleted_at IS NULL').get(d.customer_id);
+    // Le client ET les motos référencés doivent être dans le périmètre de l'appelant.
+    const customer = findScoped(db, req, 'customers', d.customer_id, 'deleted_at IS NULL');
     if (!customer) return res.status(400).json({ error: 'Client introuvable.' });
 
     const ts = nowIso();
     const id = d.id || uuid();
+    const ownerId = ownerForCreate(req, d.owner_id);
     const saleNumber = d.sale_number || allocateSaleNumber(db, null, new Date(d.sale_date || Date.now()).getFullYear());
     const status = d.status || 'brouillon';
     const saleDate = d.sale_date || new Date().toISOString().slice(0, 10);
@@ -75,17 +77,17 @@ module.exports = function saleRoutes(db) {
     const tx = db.transaction(() => {
       db.prepare(`
         INSERT INTO sales (id, sale_number, customer_id, total, discount, amount_paid, payment_method,
-          payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, device_id)
-        VALUES (?, ?, ?, 0, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          payment_status, status, sale_date, notes, created_at, updated_at, version, created_by, updated_by, owner_id, device_id)
+        VALUES (?, ?, ?, 0, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
       `).run(id, saleNumber, d.customer_id, d.discount || 0, d.amount_paid || 0,
-        d.payment_method || 'cash', status, saleDate, d.notes || null, ts, ts, req.user.id, req.user.id, req.user.deviceId || null);
+        d.payment_method || 'cash', status, saleDate, d.notes || null, ts, ts, req.user.id, req.user.id, ownerId, req.user.deviceId || null);
 
       const insItem = db.prepare(
         'INSERT INTO sale_items (id, sale_id, bike_id, unit_price, quantity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
       );
       let gross = 0;
       for (const it of d.items) {
-        const bike = db.prepare('SELECT id FROM bikes WHERE id = ? AND deleted_at IS NULL').get(it.bike_id);
+        const bike = findScoped(db, req, 'bikes', it.bike_id, 'deleted_at IS NULL');
         if (!bike) throw Object.assign(new Error('Moto introuvable : ' + it.bike_id), { status: 400 });
         const qty = Math.max(1, Number(it.quantity) || 1);
         const price = Number(it.unit_price) || 0;
@@ -106,12 +108,13 @@ module.exports = function saleRoutes(db) {
     tx();
 
     const after = db.prepare('SELECT * FROM sales WHERE id = ?').get(id);
+    audit(db, { req, action: 'sale.create', entity: 'sales', entityId: id, ownerId });
     res.status(201).json({ sale: { ...after, items: db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(id) } });
   });
 
-  /** PUT /api/sales/:id — mise à jour (statut, paiement, notes, lignes). */
+  /** PUT /api/sales/:id — mise à jour (statut, paiement, notes, lignes). Propriétaire ou admin. */
   r.put('/:id', (req, res) => {
-    const row = db.prepare('SELECT * FROM sales WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'sales', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Vente introuvable.' });
     const d = req.body || {};
 
@@ -127,6 +130,12 @@ module.exports = function saleRoutes(db) {
         db.prepare(`UPDATE sales SET ${fields.join(', ')} WHERE id = ?`).run(...args);
       }
       if (Array.isArray(d.items)) {
+        // Chaque moto référencée doit être dans le périmètre de l'appelant.
+        for (const it of d.items) {
+          if (!findScoped(db, req, 'bikes', it.bike_id)) {
+            throw Object.assign(new Error('Moto introuvable : ' + it.bike_id), { status: 400 });
+          }
+        }
         db.prepare('DELETE FROM sale_items WHERE sale_id = ?').run(req.params.id);
         const insItem = db.prepare(
           'INSERT INTO sale_items (id, sale_id, bike_id, unit_price, quantity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -159,12 +168,13 @@ module.exports = function saleRoutes(db) {
     tx();
 
     const after = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
+    audit(db, { req, action: 'sale.update', entity: 'sales', entityId: req.params.id, ownerId: row.owner_id });
     res.json({ sale: { ...after, items: db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(req.params.id) } });
   });
 
   /** DELETE /api/sales/:id (admin uniquement) — suppression logique, motos remises en stock. */
   r.delete('/:id', requireRole('admin'), (req, res) => {
-    const row = db.prepare('SELECT * FROM sales WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const row = findScoped(db, req, 'sales', req.params.id, 'deleted_at IS NULL');
     if (!row) return res.status(404).json({ error: 'Vente introuvable.' });
     const tx = db.transaction(() => {
       db.prepare('UPDATE sales SET deleted_at = ?, updated_at = ?, updated_by = ? WHERE id = ?')
@@ -178,6 +188,7 @@ module.exports = function saleRoutes(db) {
       }
     });
     tx();
+    audit(db, { req, action: 'sale.delete', entity: 'sales', entityId: req.params.id, ownerId: row.owner_id, details: { byAdmin: true } });
     res.json({ ok: true });
   });
 

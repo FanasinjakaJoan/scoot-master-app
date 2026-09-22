@@ -99,12 +99,47 @@ les droits admin. La réactivation d'un compte rend l'accès sans reconnexion.
 
 | Méthode | Route | Accès | Description |
 |---|---|---|---|
-| GET | `/api/exports/bikes?format=json\|csv` | 🔑 | Export catalogue (CSV BOM UTF-8 pour Excel) |
-| GET | `/api/exports/customers?format=…` | 🔑 | Export clients |
-| GET | `/api/exports/sales?format=…` | 🔑 | Export ventes |
-| GET | `/api/exports/backup` | 🔑 | Sauvegarde complète JSON (tombstones inclus) |
+| GET | `/api/exports/bikes?format=json\|csv` | 🔑 | Export catalogue (CSV BOM UTF-8 pour Excel) — **périmètre de l'appelant** |
+| GET | `/api/exports/customers?format=…` | 🔑 | Export clients — **périmètre de l'appelant** |
+| GET | `/api/exports/sales?format=…` | 🔑 | Export ventes — **périmètre de l'appelant** |
+| GET | `/api/exports/backup` | 🔑 | Sauvegarde complète JSON (tombstones inclus) — **périmètre de l'appelant** |
 | POST | `/api/exports/backup` | 🔑 | `{fileName, data}` — téléverse une sauvegarde locale (stockage serveur `storage/backups/`) |
 | GET | `/api/exports/backups` | 👑 | Liste des sauvegardes téléversées |
+| POST | `/api/exports/backup/drive` | 👑 | Sauvegarde **complète** (toutes les données) → Google Drive. `{format?: "json"\|"csv"}`. Réservée admin |
+| GET | `/api/exports/backup/drive?limit=` | 👑 | Liste les sauvegardes présentes sur Google Drive |
+| GET | `/api/exports/audit?action=&entity=&actor=&limit=` | 👑 | Journal d'audit des actions sensibles (créations, modifications, suppressions, `force`, sauvegarde Drive) |
+
+### Isolation des données (Row-Level Security)
+
+Les routes de lecture/écriture filtrent systématiquement par **propriétaire** :
+
+- un utilisateur régulier (`seller`) ne voit et ne modifie que les lignes dont il
+  est `owner_id` (les données autrui renvoient `404`, jamais `403`, pour ne pas
+  divulguer leur existence) ;
+- `owner_id` est **toujours imposé par le serveur** à la création : une valeur
+  fournie par le client est ignorée (pas d'usurpation) ;
+- les **suppressions** restent réservées au rôle `admin` (`403` sinon) ;
+- la synchronisation (`/api/sync/push`, `/api/sync/pull`, `/api/sync/status`) est
+  filtrée de la même façon : un `push` sur une ligne d'autrui échoue, et le
+  `pull` ne renvoie que les changements du périmètre.
+
+Un compte `admin` **contourne** ce filtre : il lit, modifie et supprime
+l'intégralité des données de l'application (RBAC — voir `docs/DATABASE_SCHEMA.md` §7).
+
+### Sauvegarde automatisée vers Google Drive
+
+La tâche planifiée interne (`BACKUP_ENABLED=true`) exporte régulièrement
+l'intégralité de la base (JSON ou CSV) et la téléverse sur Google Drive via
+l'API officielle, en s'authentifiant par **compte de service** (JWT RS256 →
+jeton OAuth2 → `files.create` multipart). Aucune dépendance `googleapis` :
+la signature est faite avec `node:crypto`.
+
+Configuration : `GOOGLE_CLIENT_EMAIL`, `GOOGLE_PRIVATE_KEY`,
+`GOOGLE_DRIVE_FOLDER_ID`, `BACKUP_INTERVAL_HOURS`, `BACKUP_FORMAT` —
+voir `backend/.env.example` et le README.
+
+Un CRON externe peut également appeler `POST /api/exports/backup/drive` avec un
+jeton admin plutôt que d'utiliser la tâche interne.
 
 ## Codes d'erreur
 

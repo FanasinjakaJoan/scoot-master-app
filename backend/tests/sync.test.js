@@ -89,14 +89,27 @@ test('sync : push hors ligne, LWW, conflits, force, pull, tombstones', async (t)
       assert.equal(bike.body.bike.price, 2650000);
     });
 
-    await t.test('force : vendeur ignoré, admin applique malgré le conflit', async () => {
-      await api(srv.base, admin.token, 'PUT', '/api/bikes/b-0001', { price: 2700000 });
+    await t.test('force : vendeur ignoré sur sa propre donnée, admin applique malgré le conflit', async () => {
+      // Motos créée « hors ligne » PAR LE VENDEUR : sous isolation (RLS), un
+      // vendeur ne peut toucher que ses propres lignes — c'est le cas ici.
+      const created = await api(srv.base, seller.token, 'POST', '/api/sync/push', {
+        deviceId: DEVICE_B,
+        operations: [{
+          entity: 'bikes', op: 'create', id: 'b-seller-1',
+          payload: { brand: 'Honda', model: 'CB 125', price: 2200000, status: 'available' },
+          clientTs: nowIso(),
+        }],
+      });
+      assert.equal(created.body.results[0].status, 'ok');
 
-      // Vendeur force une version ancienne → force ignoré (pas admin)
+      // Un admin peut éditer la donnée d'un vendeur (accès global).
+      await api(srv.base, admin.token, 'PUT', '/api/bikes/b-seller-1', { price: 2700000 });
+
+      // Vendeur force une version ancienne sur SA moto → force ignoré (pas admin)
       const asSeller = await api(srv.base, seller.token, 'POST', '/api/sync/push', {
         deviceId: DEVICE_B,
         operations: [{
-          entity: 'bikes', op: 'update', id: 'b-0001', force: true,
+          entity: 'bikes', op: 'update', id: 'b-seller-1', force: true,
           payload: { price: 2000000 }, clientTs: pastIso(2 * H),
         }],
       });
@@ -106,13 +119,43 @@ test('sync : push hors ligne, LWW, conflits, force, pull, tombstones', async (t)
       const asAdmin = await api(srv.base, admin.token, 'POST', '/api/sync/push', {
         deviceId: DEVICE_B,
         operations: [{
-          entity: 'bikes', op: 'update', id: 'b-0001', force: true,
+          entity: 'bikes', op: 'update', id: 'b-seller-1', force: true,
           payload: { price: 2750000 }, clientTs: pastIso(2 * H),
         }],
       });
       assert.equal(asAdmin.body.results[0].status, 'ok');
-      const bike = await api(srv.base, admin.token, 'GET', '/api/bikes/b-0001');
+      const bike = await api(srv.base, admin.token, 'GET', '/api/bikes/b-seller-1');
       assert.equal(bike.body.bike.price, 2750000);
+    });
+
+    await t.test('RLS : le vendeur ne peut pas modifier/supprimer une donnée de l\u2019admin', async () => {
+      // b-0001 appartient à l'admin : le vendeur ne peut ni la modifier…
+      const update = await api(srv.base, seller.token, 'POST', '/api/sync/push', {
+        deviceId: DEVICE_B,
+        operations: [{
+          entity: 'bikes', op: 'update', id: 'b-0001', force: true,
+          payload: { price: 1 }, clientTs: nowIso(),
+        }],
+      });
+      assert.equal(update.body.results[0].status, 'error');
+      assert.match(update.body.results[0].error, /Droits insuffisants/);
+
+      // …ni la supprimer (opération traitée comme inexistante).
+      const del = await api(srv.base, seller.token, 'POST', '/api/sync/push', {
+        deviceId: DEVICE_B,
+        operations: [{ entity: 'bikes', op: 'delete', id: 'b-0001', clientTs: nowIso() }],
+      });
+      assert.equal(del.body.results[0].status, 'error');
+
+      // Le prix admin reste intact (2650000, valeur posée par le test LWW).
+      const bike = await api(srv.base, admin.token, 'GET', '/api/bikes/b-0001');
+      assert.equal(bike.body.bike.price, 2650000);
+
+      // Le vendeur ne VOIT pas la moto de l'admin (404), l'admin la voit (200).
+      const sellerView = await api(srv.base, seller.token, 'GET', '/api/bikes/b-0001');
+      assert.equal(sellerView.status, 404);
+      const adminView = await api(srv.base, admin.token, 'GET', '/api/bikes/b-0001');
+      assert.equal(adminView.status, 200);
     });
 
     await t.test('pull : changements depuis `since`, y compris les tombstones', async () => {

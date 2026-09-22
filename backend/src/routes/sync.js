@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { pushOperations, pullChanges } = require('../services/sync');
+const { appendOwnerFilter } = require('../security/rls');
 
 module.exports = function syncRoutes(db) {
   const r = express.Router();
@@ -42,18 +43,24 @@ module.exports = function syncRoutes(db) {
    */
   r.get('/pull', (req, res) => {
     const { since, cursor, limit } = req.query;
-    const out = pullChanges(db, { since: since || undefined, cursor: cursor || undefined, limit: Number(limit) || 500 });
+    const out = pullChanges(db, { since: since || undefined, cursor: cursor || undefined, limit: Number(limit) || 500, user: req.user });
     res.json(out);
   });
 
-  /** GET /api/sync/status — état global (pour l'indicateur de l'app). */
+  /** GET /api/sync/status — état global (compteurs visibles par l'utilisateur). */
   r.get('/status', (req, res) => {
+    const count = (entity) => {
+      const where = ['deleted_at IS NULL'];
+      const args = [];
+      appendOwnerFilter(req, where, args);
+      return db.prepare(`SELECT COUNT(*) AS n FROM ${entity} WHERE ${where.join(' AND ')}`).get(...args).n;
+    };
     res.json({
       serverTime: new Date().toISOString(),
       counts: {
-        bikes: db.prepare("SELECT COUNT(*) AS n FROM bikes WHERE deleted_at IS NULL").get().n,
-        customers: db.prepare('SELECT COUNT(*) AS n FROM customers WHERE deleted_at IS NULL').get().n,
-        sales: db.prepare('SELECT COUNT(*) AS n FROM sales WHERE deleted_at IS NULL').get().n,
+        bikes: count('bikes'),
+        customers: count('customers'),
+        sales: count('sales'),
       },
     });
   });
